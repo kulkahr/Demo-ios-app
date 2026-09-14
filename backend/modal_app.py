@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -101,7 +102,7 @@ class VagdhenuTTS:
             else:
                 wav_path = Path(tmp) / entry.get("out", "out.wav")
             wav_bytes = wav_path.read_bytes()
-            return {"audio": wav_bytes, "duration": self._wav_duration(wav_bytes)}
+            return {"audio": wav_bytes, "duration": _wav_duration(wav_bytes)}
 
     @modal.asgi_app(label="vagdhenu-tts")
     def api(self):
@@ -113,10 +114,11 @@ class VagdhenuTTS:
         @web_app.post("/synthesize")
         async def synthesize(request: dict, http: Request) -> dict:
             # --- Auth (optional): validate against TTS_API_KEY when set. ---
+            # compare_digest: constant-time, immune to timing oracles.
             expected_key = os.environ.get("TTS_API_KEY")
             if expected_key:
                 auth_header = http.headers.get("authorization", "")
-                if auth_header != f"Bearer {expected_key}":
+                if not hmac.compare_digest(auth_header, f"Bearer {expected_key}"):
                     raise HTTPException(
                         status_code=401,
                         detail={"code": "unauthorized", "message": "Invalid API key"},
@@ -190,10 +192,25 @@ def _wav_duration(wav_bytes: bytes) -> float:
 
 
 def estimate_timing(padas: list[str], duration: float) -> list[dict]:
-    """Syllable-weight timing distribution; mirrors scripts/render_corpus.py."""
-    LONG = set("आईऊॠॄएऐओऔ")
-    SHORT = set("अइउऋऌ")
-    HEAVY = set("ंः")
+    """Syllable-weight timing distribution.
+
+    Mirrors scripts/render_corpus.py and Mantra/Services/TimingEstimator.swift.
+    Weights are assigned per code point — NOT per grapheme cluster — because
+    dependent matra signs combine into clusters with their consonant and would
+    otherwise be invisible to the weighting.
+    """
+    # Devanagari characters are written literally; this file is UTF-8.
+    LONG = set(
+        "आईऊॠॡएऐओऔ"  # independent long vowels
+        "ाीूॄेैोौ"  # dependent matra signs: ā ī ū ṝ e ai o au
+    )
+    SHORT = set(
+        "अइउऋऌ"  # independent short vowels
+        "िुृॢ"  # dependent signs: i u ṛ ḷ
+    )
+    HEAVY = set("ँंः")  # candrabindu, anusvāra, visarga → guru
+    SKIP = set("्\u200c\u200d।॥")  # virāma, ZWNJ/ZWJ, dandas
+    VIRAMA = "्"
 
     def weight(pada: str) -> int:
         w = 0
@@ -202,7 +219,7 @@ def estimate_timing(padas: list[str], duration: float) -> list[dict]:
                 w += 2
             elif ch in SHORT:
                 w += 1
-            elif ch == "्":
+            elif ch == VIRAMA or ch in SKIP:
                 continue
             else:
                 w += 1
@@ -210,11 +227,15 @@ def estimate_timing(padas: list[str], duration: float) -> list[dict]:
 
     weights = [weight(p) for p in padas]
     total = sum(weights)
-    timing, cursor = [], 0.0
+    timing: list[dict] = []
+    cursor = 0.0
     for pada, w in zip(padas, weights):
         end = min(cursor + duration * (w / total), duration)
-        timing.append({"text": pada, "start": round(cursor, 3), "end": round(end, 3), "estimated": True})
+        timing.append(
+            {"text": pada, "start": round(cursor, 3), "end": round(end, 3), "estimated": True}
+        )
         cursor = end
+    # Snap the final boundary exactly to the duration.
     if timing:
         timing[-1]["end"] = round(duration, 3)
     return timing

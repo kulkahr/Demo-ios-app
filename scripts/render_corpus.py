@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import struct
 import subprocess
 import sys
 import tempfile
@@ -35,12 +34,20 @@ AUDIO_OUT_DIR = REPO_ROOT / "mantras" / "audio"
 TIMING_OUT_DIR = REPO_ROOT / "mantras" / "timing"
 VAGDHENU_ROOT = Path(os.environ.get("VAGDHENU_ROOT", "~/vagdhenu")).expanduser()
 
-# Long-vowel markers (guru by syllable weight) in Devanagari. Everything else
-# with a vowel marker is laghu. Consonant-only aksharas are counted as part of
-# the following akshara (simplification; adequate for timing distribution).
-LONG_MATRAS = set("आईऊॠॄएऐओऔ")
-SHORT_MATRAS = set("अइउऋऌ")
-ANUSVARA_VISARGA = set("ंः")
+# Long vowels (guru, 2 moras): independent letters + dependent matra signs.
+# Weights are per code point — NOT per grapheme cluster — because dependent
+# matra signs combine into clusters with their consonant and would otherwise
+# be invisible. Mirrors backend/modal_app.py and TimingEstimator.swift.
+LONG_MATRAS = set(
+    "आईऊॠॡएऐओऔ"  # independent long vowels
+    "ाीूॄेैोौ"  # dependent matra signs: ā ī ū ṝ e ai o au
+)
+SHORT_MATRAS = set(
+    "अइउऋऌ"  # independent short vowels
+    "िुृॢ"  # dependent signs: i u ṛ ḷ
+)
+ANUSVARA_VISARGA = set("ँंः")  # candrabindu, anusvāra, visarga → guru
+SKIP_SCALARS = set("्\u200c\u200d।॥")  # virāma, ZWNJ/ZWJ, dandas
 
 
 def syllable_weight(pada: str) -> int:
@@ -51,11 +58,10 @@ def syllable_weight(pada: str) -> int:
             weight += 2
         elif ch in SHORT_MATRAS:
             weight += 1
-        elif ch == "्":  # virama — consonant cluster, no extra mora
+        elif ch == "्" or ch in SKIP_SCALARS:  # virāma, joiners, dandas
             continue
         else:
-            # Standalone consonant/vowel akshara: assume short unless followed
-            # by a long matra (handled above). Count conservatively as 1.
+            # Consonant/vowel akshara without a matra: conservative laghu.
             weight += 1
     return max(weight, 1)
 
@@ -162,7 +168,7 @@ def main() -> int:
             )
             print(f"✓ {m['stableID']}: {dest.name} ({duration:.2f}s, {len(m['padas'])} padas)")
 
-    print("\nCorpus rendered. Copy mantras/ into the Xcode resources when building.")
+    print("\nCorpus rendered. mantras/ is bundled automatically by project.yml (folder reference).")
     return 0
 
 

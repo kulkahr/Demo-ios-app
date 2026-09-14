@@ -19,7 +19,7 @@ final class AudioPlayerService: ObservableObject {
     /// Position within the current loop, in seconds.
     @Published private(set) var currentTime: Double = 0
     @Published private(set) var duration: Double = 0
-    /// 1-based index of the loop currently playing.
+    /// 1-based index of the loop currently sounding.
     @Published private(set) var loopIndex: Int = 1
     @Published var speed: Float = 1.0
     @Published var totalLoops: Int = 1
@@ -36,6 +36,10 @@ final class AudioPlayerService: ObservableObject {
     private var currentURL: URL?
     private var positionTimer: Timer?
     private var loopsRemaining = 0
+    /// Bumped on every stop/seek; stale completion handlers are discarded.
+    private var scheduleGeneration = 0
+    /// Pause point; play() resumes from here after a seek while paused.
+    private var pausedFrame: AVAudioFramePosition?
 
     init() {
         engine.attach(player)
@@ -77,7 +81,18 @@ final class AudioPlayerService: ObservableObject {
     func play() {
         guard let file, currentURL != nil else { return }
         if state == .paused {
-            player.play()
+            if let frame = pausedFrame {
+                // Resume from a seek-while-paused (or idle-seek) position: the
+                // original segment was invalidated by player.stop(), so
+                // schedule a new one starting at the seek target.
+                startEngineIfNeeded()
+                scheduleCurrentFile(startingAt: frame)
+                player.play()
+                pausedFrame = nil
+            } else {
+                // Plain pause/resume: the segment is still scheduled.
+                player.play()
+            }
             state = .playing
             startPositionTimer()
             return
@@ -99,57 +114,82 @@ final class AudioPlayerService: ObservableObject {
     func pause() {
         guard state == .playing else { return }
         player.pause()
+        // The scheduled segment stays on the node, so a plain resume via
+        // play() continues it; pausedFrame stays nil for that path.
         state = .paused
         stopPositionTimer()
     }
 
     /// Stops playback and rewinds to the beginning.
     func stop() {
+        scheduleGeneration &+= 1
         stopPositionTimer()
         player.stop()
         if engine.isRunning {
             engine.stop()
         }
         player.reset()
+        pausedFrame = nil
         currentTime = 0
         loopIndex = 1
         state = .idle
     }
 
-    /// Jumps to a position (seconds) inside the current loop.
+    /// Jumps to a position (seconds) inside the current loop. Works while
+    /// playing, paused, or idle: play() always resumes from the seek point.
     func seek(to seconds: Double) {
-        guard let file else { return }
+        guard let file, duration > 0 else { return }
         let clamped = max(0, min(seconds, duration))
-        let format = file.processingFormat
-        let frame = AVAudioFramePosition(clamped * format.sampleRate)
+        let frame = AVAudioFramePosition(clamped * file.processingFormat.sampleRate)
 
+        scheduleGeneration &+= 1
+        let generation = scheduleGeneration
         let wasPlaying = state == .playing
+        let wasIdle = state == .idle || state == .finished
+
         player.stop()
         currentTime = clamped
 
         if wasPlaying {
             startEngineIfNeeded()
-            scheduleCurrentFile(startingAt: frame)
+            scheduleCurrentFile(startingAt: frame, generation: generation)
             player.play()
+            pausedFrame = nil
+        } else {
+            if wasIdle {
+                // A seek from idle/finished arms a fresh chant session.
+                loopsRemaining = max(totalLoops - 1, 0)
+                loopIndex = 1
+            }
+            pausedFrame = frame
+            state = .paused
         }
     }
 
     // MARK: - Scheduling
 
-    private func scheduleCurrentFile(startingAt frame: AVAudioFramePosition? = nil) {
+    private func scheduleCurrentFile(
+        startingAt frame: AVAudioFramePosition? = nil,
+        generation: Int? = nil
+    ) {
         guard let file else { return }
-        file.framePosition = frame ?? 0
-        let framesRemaining = file.length - (frame ?? 0)
+        let gen = generation ?? scheduleGeneration
+        let startFrame = frame ?? 0
+        file.framePosition = startFrame
+        let framesRemaining = file.length - startFrame
         guard framesRemaining > 0 else { return }
 
         player.scheduleSegment(
             file,
-            startingFrame: frame ?? 0,
+            startingFrame: startFrame,
             frameCount: AVAudioFrameCount(framesRemaining),
             at: nil
         ) { [weak self] in
             guard let self else { return }
             Task { @MainActor in
+                // AVAudioPlayerNode fires pending completion handlers when
+                // stop() is called (stop or seek); discard stale callbacks.
+                guard self.scheduleGeneration == gen else { return }
                 self.handleSegmentCompletion()
             }
         }

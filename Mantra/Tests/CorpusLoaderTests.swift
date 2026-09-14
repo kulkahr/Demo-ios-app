@@ -4,7 +4,12 @@ import Testing
 
 /// Validates the seed corpus shape and cross-implementation parity.
 struct CorpusTests {
-    static let corpusURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    /// Repo-root path derived from this file's location — independent of the
+    /// test runner's working directory.
+    static let corpusURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()          // Mantra/Tests
+        .deletingLastPathComponent()          // Mantra
+        .deletingLastPathComponent()          // repo root
         .appendingPathComponent("mantras/mantras.json")
 
     @Test func corpusDecodesAndIsValid() throws {
@@ -21,12 +26,10 @@ struct CorpusTests {
     }
 
     @Test func pythonAndSwiftEstimatorsAgree() {
-        // Mirrors scripts/render_corpus.py syllable_weight for a sample pada.
-        // गायत्रीमन्त्र: ग=1, ा=2(guru), य=1, त=1, ्=0, ्र=0, ी=2(guru), म=1, न=1, ्=0, त्र=1
-        // Python: ग(1) ा(2) य(1) त(1) ्(0) र(1) ी(2) म(1) न(1) ्(0) त्र(1)
-        let swiftWeight = TimingEstimator.syllableWeight("गायत्रीमन्त्र")
-        #expect(swiftWeight > 0)
-        // Both implementations must treat long-matra padas as heavier than short ones.
-        #expect(swiftWeight > TimingEstimator.syllableWeight("ॐ"))
+        // Mirrors scripts/render_corpus.py syllable_weight. The contract is
+        // exact numeric parity per pada; see TimingEstimatorTests for the
+        // full reference-weight table.
+        #expect(TimingEstimator.syllableWeight("गायत्रीमन्त्र") == 12)
+        #expect(TimingEstimator.syllableWeight("गायत्रीमन्त्र") > TimingEstimator.syllableWeight("ॐ"))
     }
 }

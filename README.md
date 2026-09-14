@@ -41,7 +41,8 @@ docs/                 SDLC blueprint + architecture + API contract
    cd <this repo>
    VAGDHENU_ROOT=~/vagdhenu python3 scripts/render_corpus.py
    ```
-   This fills `mantras/audio/` and `mantras/timing/`. Then add `mantras/` to the Xcode resources.
+   This fills `mantras/audio/` and `mantras/timing/`. `mantras/` is bundled
+   automatically as a folder reference — no manual Xcode step needed.
 
 2. **Generate the Xcode project**:
    ```bash
@@ -58,7 +59,7 @@ docs/                 SDLC blueprint + architecture + API contract
    modal secret create tts-api-key TTS_API_KEY=<your-key>   # optional
    modal deploy backend/modal_app.py
    ```
-   Paste the printed URL into **Settings → TTS endpoint** in the app (plus the API key if you set one). Without it, the app runs in corpus-only mode.
+   Paste the printed URL into **Settings → TTS endpoint** in the app (plus the API key if you set one — it is stored in the device Keychain). Without it, the app runs in corpus-only mode.
 
 ## Karaoke sync
 

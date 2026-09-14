@@ -14,7 +14,7 @@ This repository contains an iOS application. You are acting as the primary AI de
 * **Project generation:** XcodeGen (`project.yml`). Do not hand-edit the `.xcodeproj`.
 * **Testing:** Swift Testing (`import Testing`, `@Test`) for unit tests in `Mantra/Tests/`; XCUITest for UI flows. New features require tests.
 * **TTS integration:** Hybrid per `docs/architecture.md` — bundled corpus (offline) + Modal GPU worker for custom verses. Contract in `docs/api-contract.md`; the Swift client and Python worker must not drift.
-* **Configuration:** The TTS endpoint/API key are user settings (UserDefaults), never hard-coded.
+* **Configuration:** The TTS endpoint is a user setting (UserDefaults); the API key is a credential stored in the **Keychain** (`Mantra/Services/KeychainStore.swift`), never hard-coded and never in UserDefaults.
 
 # Freebuff Operational Rules
 * **Planning First:** For any task involving multiple files or structural changes, propose a step-by-step plan before writing code.

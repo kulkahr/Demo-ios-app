@@ -3,14 +3,30 @@ import Testing
 @testable import Mantra
 
 /// SDLC Phase 5: Swift Testing suite for the timing engine.
+/// Expected weights are cross-checked against the Python implementations in
+/// `scripts/render_corpus.py` and `backend/modal_app.py` (scalar-level parity).
 struct TimingEstimatorTests {
     @Test func weightsCountGuruAndLaghu() {
         // "ॐ" counts as one mora (no vowel marks).
         #expect(TimingEstimator.syllableWeight("ॐ") == 1)
-        // Long ā doubles the weight: भू (2) vs भ (1).
-        #expect(TimingEstimator.syllableWeight("भूर्भुवः") > TimingEstimator.syllableWeight("स्वः"))
-        // Empty/cluster-only strings still weigh at least 1.
+        // Virama-only strings still weigh at least 1.
         #expect(TimingEstimator.syllableWeight("्") == 1)
+        // Dependent matra signs are detected per Unicode scalar:
+        // क (1) vs का (1 + 2) vs सि (1 + 1) vs सी (1 + 2).
+        #expect(TimingEstimator.syllableWeight("क") == 1)
+        #expect(TimingEstimator.syllableWeight("का") == 3)
+        #expect(TimingEstimator.syllableWeight("सि") == 2)
+        #expect(TimingEstimator.syllableWeight("सी") == 3)
+        // Visarga is guru: स्(1) + व(1) + ः(2).
+        #expect(TimingEstimator.syllableWeight("स्वः") == 4)
+    }
+
+    @Test func weightsMatchPythonReference() {
+        // Values computed by running scripts/render_corpus.py syllable_weight.
+        #expect(TimingEstimator.syllableWeight("भूर्भुवः") == 9)
+        #expect(TimingEstimator.syllableWeight("गायत्रीमन्त्र") == 12)
+        #expect(TimingEstimator.syllableWeight("नावधीतमस्तु") == 12)
+        #expect(TimingEstimator.syllableWeight("प्रचोदयात्") == 10)
     }
 
     @Test func estimateCoversFullDurationInOrder() {

@@ -102,7 +102,7 @@ Word-level sync is the core feature, so its design is explicit:
 |---|---|
 | `AudioPlayerService` | AVAudioEngine playback of local WAVs, loop count, speed, karaoke position callbacks |
 | `MantraRepository` | SwiftData seeding from `mantras.json`, CRUD for custom chants, favorites, session history |
-| `VagdhenuClient` | HTTPS client for the Modal endpoint, shard-JSON builder, WAV cache management |
+| `VagdhenuClient` | HTTPS client for the Modal endpoint, shard-JSON builder |
 | `TimingEstimator` | Duration-weighted word timings when no sidecar exists |
 
 ## 6. Directory layout
@@ -111,14 +111,13 @@ Word-level sync is the core feature, so its design is explicit:
 Mantra/
   App/                — MantraApp.swift, RootView, AppModel
   Models/             — Mantra.swift, ChantSession.swift, TimingEntry.swift
-  Services/           — AudioPlayerService, VagdhenuClient, MantraRepository, TimingEstimator
-  ViewModels/         — ChantViewModel, CustomChantViewModel, LibraryViewModel
-  Views/              — MantraListView, ChantView, CustomChantView, SettingsView, Shared/
-  Resources/Mantras/  — mantras.json, audio/*.wav, timing/*.json (sidecars)
+  Services/           — AudioPlayerService, VagdhenuClient, MantraRepository,
+                        CorpusLoader, TimingEstimator, KeychainStore
+  ViewModels/         — ChantViewModel, CustomChantViewModel, AppSettings
+  Views/              — MantraListView, ChantView, CustomChantView, SettingsView
   Tests/              — Swift Testing suite
 backend/
   modal_app.py        — Modal app definition (FastAPI + Vagdhenu inference)
-  requirements.txt
 scripts/
   render_corpus.py    — batch-render mantras.json via Vagdhenu → mantras/audio
 mantras/
@@ -127,10 +126,14 @@ mantras/
   timing/             — sidecar word timings (generated, not committed)
 ```
 
+The `mantras/` directory ships as a **folder reference** in `project.yml` and
+is bundled verbatim (no manual Xcode step); `Mantra/Tests/` is excluded from
+the app target and compiled only into the `MantraTests` bundle.
+
 ## 7. Consistency rules
 
 - **Corpus rendering:** `scripts/render_corpus.py` reads `mantras/mantras.json`, calls Vagdhenu's `src/render.py`, and emits WAVs + sidecar timing JSONs. It must only run on a CUDA 12.1 machine after `scripts/setup.sh` in the Vagdhenu repo — never in this sandbox.
 - **Shared contract:** backend and client implement the same shard-JSON + response contract (api-contract.md); both are complete and must not drift.
-- **No hard-coded URLs:** the TTS endpoint is stored in `AppStorage`, default empty. An unconfigured endpoint degrades the UI gracefully to corpus-only mode.
+- **No hard-coded URLs or secrets:** the TTS endpoint is stored in `UserDefaults`; the API key is stored in the **Keychain** (`KeychainStore`) and migrated there from legacy `UserDefaults` storage on first launch. An unconfigured endpoint degrades the UI gracefully to corpus-only mode.
 - **No placeholders:** every code path must be complete; there are no `// TODO` stubs.
 - **Generated artifacts are not committed:** WAV/timing files are reproducible from `mantras.json` + the render script; the JSON is the source of truth.

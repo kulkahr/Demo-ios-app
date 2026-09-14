@@ -116,8 +116,11 @@ final class MantraRepository {
     }
 
     func deleteMantra(_ mantra: Mantra) throws {
-        if let cached = mantra.cachedAudio {
-            AudioCache.remove(fileName: cached.fileName)
+        // Unlink the file first: after modelContext.delete the relationship is
+        // zeroed, so read the name now; deleting the model cascades to
+        // CachedAudio, but the on-disk file must be removed explicitly.
+        if let fileName = mantra.cachedAudio?.fileName {
+            AudioCache.remove(fileName: fileName)
         }
         modelContext.delete(mantra)
         try modelContext.save()

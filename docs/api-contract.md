@@ -27,7 +27,7 @@ Mirrors Vagdhenu's batch shard JSON format (`src/render.py --shard`):
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `id` | string | yes | Client-generated unique ID, also used as the cache key |
+| `id` | string | yes | Client-generated unique ID, echoed in the response |
 | `meter` | string | yes | Vagdhenu meter key, e.g. `anushtubh` |
 | `padas` | [string] | yes | Devanagari words, in chant order |
 | `seed` | int? | no | Optional determinism seed |
@@ -85,7 +85,7 @@ The worker validates it against `TTS_API_KEY` (Modal secret). If `TTS_API_KEY` i
 
 ## Worker-side caching
 
-The worker keeps a Modal Volume cache keyed by `(meter, joined padas, seed)`. A cache hit returns `cached: true` with the same response shape. This mirrors the client-side cache; either layer may serve a repeat request.
+The worker keeps a Modal Volume cache keyed by `(meter, padas, seed)`. A cache hit returns `cached: true` with the same response shape. This mirrors the client-side cache; either layer may serve a repeat request.
 
 ## Timing rules
 

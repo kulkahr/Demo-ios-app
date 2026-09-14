@@ -16,8 +16,17 @@ targets:
     platform: iOS
     sources:
       - path: Mantra
+        excludes:
+          - "Tests"
+          - "Tests/**"
+      # Folder reference: copied verbatim into the bundle as `mantras/`,
+      # preserving audio/ and timing/ subdirectories. New rendered files are
+      # picked up automatically (no `xcodegen generate` re-run needed).
+      - path: mantras
+        type: folder
     settings:
       base:
+        GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
@@ -33,6 +42,7 @@ targets:
       - target: Mantra
     settings:
       base:
+        GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Mantra.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Mantra"
         BUNDLE_LOADER: "$(TEST_HOST)"
 schemes:

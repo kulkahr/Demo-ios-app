@@ -84,15 +84,32 @@ final class ChantViewModel: ObservableObject {
     private func resolveTimingPlan(mantra: Mantra, duration: Double) -> TimingPlan {
         // 1) Custom verses: backend-provided timings win.
         if let remote = mantra.remoteTiming, !remote.isEmpty {
-            return TimingPlan(entries: remote)
+            return TimingPlan(entries: Self.clamped(remote, to: duration))
         }
         // 2) Corpus: sidecar timing if bundled.
         if !mantra.isCustom,
            let sidecar = CorpusLoader().sidecarTiming(for: mantra.stableID) {
-            return TimingPlan(entries: sidecar)
+            return TimingPlan(entries: Self.clamped(sidecar, to: duration))
         }
         // 3) Fallback: on-device syllable-weight estimation.
         return TimingEstimator.estimate(padas: mantra.padas, duration: duration)
+    }
+
+    /// api-contract.md: "Clients must clamp: if `end > duration`, clamp to
+    /// `duration`." Guards against backend/duration drift so the last word
+    /// can't stay highlighted past the end of the audio.
+    private static func clamped(_ entries: [TimingEntry], to duration: Double) -> [TimingEntry] {
+        guard duration > 0 else { return entries }
+        return entries.map { entry in
+            let start = min(entry.start, duration)
+            let end = min(max(entry.end, start), duration)
+            return TimingEntry(
+                text: entry.text,
+                start: start,
+                end: end,
+                estimated: entry.estimated
+            )
+        }
     }
 
     private func resolveAudioURL(for mantra: Mantra) throws -> URL? {
