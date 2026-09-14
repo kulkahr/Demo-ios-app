@@ -1,0 +1,8 @@
+.DS_Store
+*.pyc
+__pycache__/
+mantras/audio/
+mantras/timing/
+Mantra.xcodeproj/
+xcuserdata/
+*.xcuserstate

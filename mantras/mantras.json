@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "mantras": [
+    {
+      "stableID": "gayatri",
+      "title": "Gāyatrī Mantra",
+      "transliteration": "oṃ bhūr bhuvaḥ svaḥ tat savitur vareṇyaṃ bhargo devasya dhīmahi dhiyo yo naḥ pracodayāt",
+      "padas": [
+        "ॐ",
+        "भूर्भुवः",
+        "स्वः",
+        "तत्सवितुर्वरेण्यम्",
+        "भर्गो",
+        "देवस्य",
+        "धीमहि",
+        "धियो",
+        "यो",
+        "नः",
+        "प्रचोदयात्"
+      ],
+      "meter": "gayatri",
+      "meaning": "We meditate on the radiant light of Savitur (the divine sun); may it illuminate our intellect.",
+      "sourceName": "Ṛgveda 3.62.10",
+      "audioFileName": "gayatri.wav"
+    },
+    {
+      "stableID": "mahamrityunjaya",
+      "title": "Mahāmṛtyuñjaya Mantra",
+      "transliteration": "tryambakaṃ yajāmahe sugandhiṃ puṣṭivardhanam urvārukam iva bandhanān mṛtyor mukṣīya māmṛtāt",
+      "padas": [
+        "त्र्यम्बकं",
+        "यजामहे",
+        "सुगन्धिं",
+        "पुष्टिवर्धनम्",
+        "उर्वारुकमिव",
+        "बन्धनान्",
+        "मृत्योर्मुक्षीय",
+        "मामृतात्"
+      ],
+      "meter": "anushtubh",
+      "meaning": "We worship the three-eyed Lord Shiva, fragrant and nourishing; may He liberate us from the bondage of death, like a cucumber from its stalk — but not from immortality.",
+      "sourceName": "Ṛgveda 7.59.12",
+      "audioFileName": "mahamrityunjaya.wav"
+    },
+    {
+      "stableID": "sahanavavatu",
+      "title": "Saha Nāv Avatu (Śānti Pāṭha)",
+      "transliteration": "oṃ saha nāv avatu saha nau bhunaktu saha vīryaṃ karavāvahai tejasvi nāv adhītam astu mā vidviṣāvahai oṃ śāntiḥ śāntiḥ śāntiḥ",
+      "padas": [
+        "ॐ",
+        "सह",
+        "नाववतु",
+        "सह",
+        "नौ",
+        "भुनक्तु",
+        "सह",
+        "वीर्यं",
+        "करवावहै",
+        "तेजस्वि",
+        "नावधीतमस्तु",
+        "मा",
+        "विद्विषावहै",
+        "ॐ",
+        "शान्तिः",
+        "शान्तिः",
+        "शान्तिः"
+      ],
+      "meter": "anushtubh",
+      "meaning": "May the Lord protect and nourish us together; may our study be radiant and free of enmity. Peace, peace, peace.",
+      "sourceName": "Taittirīya Upaniṣad 2.2.2 (Kṛṣṇa Yajurveda)",
+      "audioFileName": "sahanavavatu.wav"
+    }
+  ]
+}
