@@ -78,7 +78,7 @@ def render_corpus(corpus: dict) -> dict[str, bytes]:
 
             duration = wav_duration(produced)
             outputs[m["audioFileName"]] = produced.read_bytes()
-            timing = estimate_timing(m["padas"], duration)
+            timing = estimate_timing(m["padas"], duration, meter=m["meter"])
             outputs[f"{m['stableID']}.json"] = json.dumps(
                 timing, ensure_ascii=False, indent=2
             ).encode()

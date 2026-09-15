@@ -67,9 +67,13 @@ Word timings resolve in priority order (see `docs/architecture.md` §5.3):
 
 1. Backend-provided timings (custom verses)
 2. Sidecar `mantras/timing/<id>.json` (corpus, produced at render time)
-3. On-device syllable-weight estimation (`TimingEstimator`) — flagged as estimated
+3. On-device structural estimation (`TimingEstimator`) — flagged as estimated
 
-The same estimator algorithm is implemented in Swift, Python (worker + render script) so all paths agree.
+The estimator follows Vagdhenu's synthesis structure (per-pada speech + fixed inter-pada gaps, rescaled to the audio), so short words are never skipped and highlights switch at word onsets. The same algorithm is implemented in Swift, Python (worker + both render scripts) so all paths agree. Rebuilt corpus sidecars after changing the estimator with:
+
+```bash
+python3 scripts/regen_timing.py   # no GPU needed — reads existing WAVs
+```
 
 ## Attributions & licenses
 

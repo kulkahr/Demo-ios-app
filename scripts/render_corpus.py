@@ -34,54 +34,97 @@ AUDIO_OUT_DIR = REPO_ROOT / "mantras" / "audio"
 TIMING_OUT_DIR = REPO_ROOT / "mantras" / "timing"
 VAGDHENU_ROOT = Path(os.environ.get("VAGDHENU_ROOT", "~/vagdhenu")).expanduser()
 
-# Long vowels (guru, 2 moras): independent letters + dependent matra signs.
-# Weights are per code point — NOT per grapheme cluster — because dependent
-# matra signs combine into clusters with their consonant and would otherwise
-# be invisible. Mirrors backend/modal_app.py and TimingEstimator.swift.
-LONG_MATRAS = set(
-    "आईऊॠॡएऐओऔ"  # independent long vowels
-    "ाीूॄेैोौ"  # dependent matra signs: ā ī ū ṝ e ai o au
-)
-SHORT_MATRAS = set(
-    "अइउऋऌ"  # independent short vowels
-    "िुृॢ"  # dependent signs: i u ṛ ḷ
-)
-ANUSVARA_VISARGA = set("ँंः")  # candrabindu, anusvāra, visarga → guru
-SKIP_SCALARS = set("्\u200c\u200d।॥")  # virāma, ZWNJ/ZWJ, dandas
+# --- Karaoke timing estimator (structural model) -----------------------------
+# Vagdhenu synthesizes each pada as its own clip and stitches them with fixed
+# gaps (render.py: --gap 0.55s, +0.20s when the clip ends in virāma; the
+# trailing gap is dropped). Per-clip speech length is aksharas × the meter's
+# sec_per_syll from src/reference_bank/bank.json. Word onsets therefore follow
+# that structure; the speech rate is then globally rescaled so the plan spans
+# the real WAV — the residual (gate()/F5 trim) scales with speech, while the
+# gaps are exact digital silence.
+# PARITY: Mantra/Services/TimingEstimator.swift, scripts/kaggle_render.py and
+# backend/modal_app.py implement the same rule (architecture.md §5.3).
+
+METER_SPS = {
+    # ASCII stems (render.py's WAV-name keys) and IAST bank keys, s/syllable.
+    "anushtubh": 0.326, "anuṣṭubh": 0.326,
+    "pramanika": 0.275, "pramāṇikā": 0.275,
+    "vasantatilaka": 0.259, "vasantatilakā": 0.259,
+    "upajati": 0.273, "upajāti": 0.273,
+    "indravajra": 0.260, "indravajrā": 0.260,
+    "upendravajra": 0.269, "upendravajrā": 0.269,
+    "vamshastha": 0.255, "vaṃśastha": 0.255,
+    "rathoddhata": 0.301, "rathoddhatā": 0.301,
+    "shalini": 0.320, "śālinī": 0.320,
+    "indravamsha": 0.268, "indravaṃśā": 0.268,
+    "drutavilambita": 0.369,
+    "bhujangaprayata": 0.303, "bhujaṅgaprayāta": 0.303,
+    "malini": 0.268, "mālinī": 0.268,
+    "shardulavikridita": 0.273, "śārdūlavikrīḍita": 0.273,
+    "sragdhara": 0.310, "sragdharā": 0.310,
+    "vrutta1": 0.437, "vrutta-1": 0.437,
+    "gadya": 0.260, "gadya_mbtn": 0.260,
+}
+DEFAULT_SPS = 0.259   # render.py's unknown-meter fallback is vasantatilakā
+GAP_S = 0.55          # render.py --gap
+GAP_HALANT_S = 0.20   # render.py --gap_halant (added after a virāma-final clip)
+VIRAMAS = ("्", "್")  # Devanagari + Kannada virāma
 
 
-def syllable_weight(pada: str) -> int:
-    """Estimate moraic weight of a pada: guru units count 2, laghu 1 (min 1)."""
-    weight = 0
-    for ch in pada:
-        if ch in LONG_MATRAS or ch in ANUSVARA_VISARGA:
-            weight += 2
-        elif ch in SHORT_MATRAS:
-            weight += 1
-        elif ch == "्" or ch in SKIP_SCALARS:  # virāma, joiners, dandas
-            continue
-        else:
-            # Consonant/vowel akshara without a matra: conservative laghu.
-            weight += 1
-    return max(weight, 1)
+def akshara_count(pada: str) -> int:
+    """Syllables in a pada — port of render.py's n_aksharas on Devanagari
+    (plus its Kannada ranges, since prep_text accepts any Brahmic script).
+    Independent vowels and non-halant consonants count 1; a consonant followed
+    by virāma starts a cluster and adds nothing; ॐ chants as one syllable
+    (oṃ, via the Kannada-routed model text); matras, anusvāra, visarga,
+    joiners and dandas add nothing."""
+    n = 0
+    for i, ch in enumerate(pada):
+        o = ord(ch)
+        if 0x0905 <= o <= 0x0914 or 0x0C85 <= o <= 0x0C94:
+            n += 1  # independent vowels
+        elif 0x0915 <= o <= 0x0939 or 0x0C95 <= o <= 0x0CB9:
+            nxt = pada[i + 1] if i + 1 < len(pada) else ""
+            if nxt not in VIRAMAS:
+                n += 1  # consonant onset (halant consonants join the next)
+        elif o == 0x0950:  # ॐ
+            n += 1
+    return max(n, 1)
 
 
-def estimate_timing(padas: list[str], duration: float) -> list[dict]:
-    """Distribute duration across padas weighted by syllable weight."""
-    weights = [syllable_weight(p) for p in padas]
-    total = sum(weights)
+def meter_sps(meter: str | None) -> float:
+    return METER_SPS.get((meter or "").strip().lower(), DEFAULT_SPS)
+
+
+def estimate_timing(padas: list[str], duration: float, meter: str | None = None) -> list[dict]:
+    """Structural karaoke timings: word onsets follow Vagdhenu's synthesis
+    structure (per-pada speech + fixed inter-pada gaps). Each entry spans from
+    its speech onset to the next entry's onset, so a word stays highlighted
+    through the pause after it and switches exactly at the next onset — short
+    words are never skipped while still sounding."""
+    n = len(padas)
+    if n == 0 or duration <= 0:
+        return []
+    sps = meter_sps(meter)
+    speech = [akshara_count(p) * sps for p in padas]
+    gaps = [GAP_S + (GAP_HALANT_S if p.endswith(VIRAMAS) else 0.0) for p in padas]
+    gap_total = sum(gaps[:-1])  # the stitcher drops the trailing gap
+    speech_total = sum(speech)
+    if speech_total > 0 and duration > gap_total:
+        k = (duration - gap_total) / speech_total
+        speech = [s * k for s in speech]
+    onsets: list[float] = []
+    t = 0.0
+    for i, s in enumerate(speech):
+        onsets.append(t)
+        t += s + (gaps[i] if i < n - 1 else 0.0)
     timing: list[dict] = []
-    cursor = 0.0
-    for pada, w in zip(padas, weights):
-        span = duration * (w / total)
-        end = round(min(cursor + span, duration), 3)
+    for i, pada in enumerate(padas):
+        start = min(onsets[i], duration)
+        end = min(onsets[i + 1] if i + 1 < n else duration, duration)
         timing.append(
-            {"text": pada, "start": round(cursor, 3), "end": end, "estimated": True}
+            {"text": pada, "start": round(start, 3), "end": round(end, 3), "estimated": True}
         )
-        cursor = end
-    # Snap the final boundary exactly to the duration.
-    if timing:
-        timing[-1]["end"] = round(duration, 3)
     return timing
 
 
@@ -165,7 +208,7 @@ def main() -> int:
             dest = AUDIO_OUT_DIR / m["audioFileName"]
             shutil.copyfile(produced, dest)
             duration = wav_duration(dest)
-            timing = estimate_timing(m["padas"], duration)
+            timing = estimate_timing(m["padas"], duration, meter=m["meter"])
             (TIMING_OUT_DIR / f"{m['stableID']}.json").write_text(
                 json.dumps(timing, ensure_ascii=False, indent=2)
             )

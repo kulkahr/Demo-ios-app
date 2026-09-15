@@ -52,7 +52,7 @@ This document is the implementation contract for the iOS mantra-chanting app. It
 1. `mantras/mantras.json` + `mantras/audio/*.wav` ship inside the app bundle.
 2. `MantraRepository` seeds SwiftData on first launch (`AppModel.seedIfNeeded()`).
 3. Playback is fully offline via `AudioPlayerService`.
-4. Karaoke timings come from a sidecar `mantras/timing/<mantra_id>.json` if present; otherwise `TimingEstimator` derives them from WAV duration + syllable weight (laghu/guru) per pada, flagged as estimates.
+4. Karaoke timings come from a sidecar `mantras/timing/<mantra_id>.json` if present; otherwise `TimingEstimator` derives them from the WAV duration following the structural model (§5.3), flagged as estimates.
 
 ### 3.2 Path B — on-demand synthesis (custom verses)
 
@@ -92,9 +92,11 @@ Recorded after each completed chant for history/stats: `startedAt`, `completedAt
 
 Word-level sync is the core feature, so its design is explicit:
 
-- **Corpus path with sidecar:** if `mantras/timing/<mantra_id>.json` exists in the bundle it is used directly (ground truth, produced at render time).
-- **Corpus path without sidecar:** `TimingEstimator` distributes the WAV duration across padas weighted by syllable count and guru/laghu weight from the meter; results are flagged as estimates.
+- **Corpus path with sidecar:** if `mantras/timing/<mantra_id>.json` exists in the bundle it is used directly (produced at render time by the structural estimator below).
+- **Corpus path without sidecar:** `TimingEstimator` distributes the WAV duration across padas following Vagdhenu's synthesis structure (below); results are flagged as estimates.
 - **Custom path:** the Modal backend returns explicit word timings in the synthesis response (api-contract.md); the client uses them directly — no estimation.
+
+**Structural timing model (all paths):** Vagdhenu renders each pada as its own clip — speech length = aksharas × the meter's `sec_per_syllable` (bank.json) — and stitches clips with a fixed gap (`--gap 0.55s`, `+0.20s` after a virāma-final clip, trailing gap dropped). Word timings therefore follow that structure: onsets accumulate `speech + gap`, speech is globally rescaled so the plan spans the real WAV (the gate/F5 trim scales with speech; the gaps are exact silence), and each entry spans from its onset to the **next** onset so a short word is never skipped while still sounding. Implemented identically in `TimingEstimator.swift`, `scripts/render_corpus.py`, `scripts/kaggle_render.py` and `backend/modal_app.py` — changes must be applied to all four.
 
 ### 5.4 Services
 
@@ -103,7 +105,7 @@ Word-level sync is the core feature, so its design is explicit:
 | `AudioPlayerService` | AVAudioEngine playback of local WAVs, loop count, speed, karaoke position callbacks |
 | `MantraRepository` | SwiftData seeding from `mantras.json`, CRUD for custom chants, favorites, session history |
 | `VagdhenuClient` | HTTPS client for the Modal endpoint, shard-JSON builder |
-| `TimingEstimator` | Duration-weighted word timings when no sidecar exists |
+| `TimingEstimator` | Structural word timings (speech + gaps, rescaled) when no sidecar exists |
 
 ## 6. Directory layout
 
@@ -136,5 +138,5 @@ the app target and compiled only into the `MantraTests` bundle.
 - **Shared contract:** backend and client implement the same shard-JSON + response contract (api-contract.md); both are complete and must not drift.
 - **No hard-coded URLs or secrets:** the TTS endpoint is stored in `UserDefaults`; the API key is stored in the **Keychain** (`KeychainStore`) and migrated there from legacy `UserDefaults` storage on first launch. An unconfigured endpoint degrades the UI gracefully to corpus-only mode.
 - **No placeholders:** every code path must be complete; there are no `// TODO` stubs.
-- **Generated artifacts are not committed:** WAV/timing files are reproducible from `mantras.json` + the render script; the JSON is the source of truth.
+- **Generated artifacts are not committed:** WAV/timing files are reproducible from `mantras.json` + the render script (or `scripts/regen_timing.py` for sidecars only, no GPU needed); the JSON is the source of truth.
 - **Meter names resolve against Vagdhenu's reference bank:** `render.py` looks up the `meter` field by bank key (IAST, e.g. `anuṣṭubh`) or WAV stem (ASCII, e.g. `anushtubh`). Supported stems: `anushtubh`, `vasantatilaka`, `upajati`, `indravajra`, `upendravajra`, `vamshastha`, `rathoddhata`, `shalini`, `indravamsha`, `drutavilambita`, `bhujangaprayata`, `malini`, `shardulavikridita`, `sragdhara`, `pramanika`, `vrutta1`. A name outside the bank (e.g. `gayatri`) is not an error — Vagdhenu falls back to `vasantatilaka` by design (logged as `[meter] unknown vṛtta … -> fallback`). New corpus entries should prefer a bank-resolvable name; if a non-bank meter is kept for correctness of the data model, expect the fallback contour.

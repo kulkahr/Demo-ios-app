@@ -91,8 +91,9 @@ final class ChantViewModel: ObservableObject {
            let sidecar = CorpusLoader().sidecarTiming(for: mantra.stableID) {
             return TimingPlan(entries: Self.clamped(sidecar, to: duration))
         }
-        // 3) Fallback: on-device syllable-weight estimation.
-        return TimingEstimator.estimate(padas: mantra.padas, duration: duration)
+        // 3) Fallback: on-device structural estimation (synthesis-structure
+        // model — speech + gaps, rescaled; meter selects the speech rate).
+        return TimingEstimator.estimate(padas: mantra.padas, duration: duration, meter: mantra.meter)
     }
 
     /// api-contract.md: "Clients must clamp: if `end > duration`, clamp to

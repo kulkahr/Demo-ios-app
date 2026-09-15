@@ -92,5 +92,6 @@ The worker keeps a Modal Volume cache keyed by `(meter, padas, seed)`. A cache h
 ## Timing rules
 
 - `timing` must contain exactly one entry per pada, in order.
-- Word boundaries come from the render pipeline when available; otherwise the worker estimates them the same way `TimingEstimator` does on-device (syllable-weight distribution), marking `estimated: true`.
+- Word boundaries come from the render pipeline when available; otherwise the worker estimates them the same way `TimingEstimator` does on-device (structural model: per-pada speech = aksharas × meter sec-per-syllable + fixed inter-pada gaps, rescaled to the audio duration; each entry spans from its onset to the next onset), marking `estimated: true`.
+- Entries must be contiguous — each entry's `start` equals the previous entry's `end` — so highlight switches happen exactly at onsets and no word is skipped while still sounding.
 - Clients must clamp: if `end > duration`, clamp to `duration`.

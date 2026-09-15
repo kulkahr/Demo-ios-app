@@ -1,75 +1,114 @@
 import Foundation
 
-/// Estimates word-level karaoke timings when no measured sidecar exists,
-/// distributing audio duration across padas by syllable weight (laghu/guru).
+/// Estimates word-level karaoke timings when no measured sidecar exists.
 ///
-/// Weights are assigned per **Unicode scalar** — not per grapheme cluster —
-/// because Devanagari matra signs combine into clusters with their consonant
-/// and would otherwise be invisible. This mirrors the Python implementations
-/// in `scripts/render_corpus.py` and `backend/modal_app.py`; any change here
-/// must be applied to both (Swift ↔ Python parity, architecture.md §5.3).
+/// Structural model mirroring Vagdhenu's synthesis: each pada is rendered as
+/// its own clip (speech = aksharas × the meter's sec-per-syllable) stitched
+/// with a fixed inter-pada gap (0.55 s; +0.20 s after a virāma-final clip;
+/// the trailing gap is dropped). Speech is then globally rescaled so the plan
+/// spans the real audio — the gaps are exact digital silence, and the
+/// residual (gate/F5 trim) scales with speech.
+///
+/// Each entry spans from its speech onset to the **next** entry's onset, so a
+/// word stays highlighted through the pause after it and the next word lights
+/// up exactly at its onset — short words (ॐ, यो, नः, मा) are never skipped
+/// while still sounding.
+///
+/// PARITY: scripts/render_corpus.py, scripts/kaggle_render.py and
+/// backend/modal_app.py implement the same rule (architecture.md §5.3).
+/// Weighting is per akshara (syllable), ported from render.py's n_aksharas —
+/// not per grapheme cluster or mora.
 enum TimingEstimator {
-    // Long vowels (guru, 2 moras) as dependent matra signs and independent letters.
-    private static let longScalars: Set<Unicode.Scalar> = [
-        "\u{093E}", "\u{0940}", "\u{0942}", "\u{0944}", // ā ī ū ṝ signs
-        "\u{0947}", "\u{0948}", "\u{094A}", "\u{094B}", // e ai o au signs (guru in Sanskrit)
-        "\u{0906}", "\u{0908}", "\u{090A}", "\u{0960}", "\u{0961}", // Ā Ī Ū Ǖ 噜 independent
-        "\u{090F}", "\u{0910}", "\u{0913}", "\u{0914}", // Ē AI Ō AU independent
+    /// sec-per-syllable from Vagdhenu's src/reference_bank/bank.json; ASCII
+    /// stems (render.py's WAV-name keys) plus IAST bank keys.
+    static let meterSecPerSyllable: [String: Double] = [
+        "anushtubh": 0.326, "anuṣṭubh": 0.326,
+        "pramanika": 0.275, "pramāṇikā": 0.275,
+        "vasantatilaka": 0.259, "vasantatilakā": 0.259,
+        "upajati": 0.273, "upajāti": 0.273,
+        "indravajra": 0.260, "indravajrā": 0.260,
+        "upendravajra": 0.269, "upendravajrā": 0.269,
+        "vamshastha": 0.255, "vaṃśastha": 0.255,
+        "rathoddhata": 0.301, "rathoddhatā": 0.301,
+        "shalini": 0.320, "śālinī": 0.320,
+        "indravamsha": 0.268, "indravaṃśā": 0.268,
+        "drutavilambita": 0.369,
+        "bhujangaprayata": 0.303, "bhujaṅgaprayāta": 0.303,
+        "malini": 0.268, "mālinī": 0.268,
+        "shardulavikridita": 0.273, "śārdūlavikrīḍita": 0.273,
+        "sragdhara": 0.310, "sragdharā": 0.310,
+        "vrutta1": 0.437, "vrutta-1": 0.437,
+        "gadya": 0.260, "gadya_mbtn": 0.260,
     ]
-    // Short vowels (laghu, 1 mora).
-    private static let shortScalars: Set<Unicode.Scalar> = [
-        "\u{093F}", "\u{0941}", "\u{0943}", "\u{0962}", // i u ṛ ḷ signs
-        "\u{0945}", "\u{0946}", // candra e / short e signs (rare)
-        "\u{0905}", "\u{0907}", "\u{0909}", "\u{090B}", "\u{090C}", // A I U R̤ L̤ independent
-    ]
-    // Anusvāra/candrabindu/visarga make the syllable guru (2 moras).
-    private static let heavyScalars: Set<Unicode.Scalar> = ["\u{0901}", "\u{0902}", "\u{0903}"]
-    // Virāma: part of a consonant cluster, no extra mora.
-    private static let virama: Unicode.Scalar = "\u{094D}"
-    // Joiners/non-joiners carry no prosodic weight.
-    private static let invisibleScalars: Set<Unicode.Scalar> = ["\u{200C}", "\u{200D}"]
-    // Dandas are punctuation, not chanted material.
-    private static let punctuationScalars: Set<Unicode.Scalar> = ["\u{0964}", "\u{0965}"]
+    /// render.py's unknown-meter fallback is vasantatilakā.
+    static let defaultSecPerSyllable = 0.259
+    /// render.py --gap.
+    static let gapSeconds = 0.55
+    /// render.py --gap_halant (added after a virāma-final clip).
+    static let gapHalantSeconds = 0.20
+    /// Devanagari + Kannada virāma.
+    private static let viramas: Set<Unicode.Scalar> = ["\u{094D}", "\u{0CCD}"]
 
-    static func syllableWeight(_ pada: String) -> Int {
-        var weight = 0
-        for scalar in pada.unicodeScalars {
-            if longScalars.contains(scalar) || heavyScalars.contains(scalar) {
-                weight += 2
-            } else if shortScalars.contains(scalar) {
-                weight += 1
-            } else if scalar == virama
-                        || invisibleScalars.contains(scalar)
-                        || punctuationScalars.contains(scalar) {
-                continue
-            } else {
-                weight += 1
+    /// Syllables (aksharas) in a pada — port of render.py's n_aksharas.
+    /// Independent vowels and non-halant consonants count 1; a consonant
+    /// followed by virāma starts a cluster and adds nothing; ॐ chants as one
+    /// syllable; matras, anusvāra, visarga, joiners and dandas add nothing.
+    static func aksharaCount(_ pada: String) -> Int {
+        let scalars = Array(pada.unicodeScalars)
+        var count = 0
+        for (i, scalar) in scalars.enumerated() {
+            let v = scalar.value
+            if (0x0905...0x0914).contains(v) || (0x0C85...0x0C94).contains(v) {
+                count += 1  // independent vowels
+            } else if (0x0915...0x0939).contains(v) || (0x0C95...0x0CB9).contains(v) {
+                let next = i + 1 < scalars.count ? scalars[i + 1] : nil
+                if next.map({ !viramas.contains($0) }) ?? true {
+                    count += 1  // consonant onset (halant consonants join the next)
+                }
+            } else if v == 0x0950 {
+                count += 1  // ॐ
             }
         }
-        return max(weight, 1)
+        return max(count, 1)
     }
 
-    /// Distributes `duration` across `padas`, weighted by syllable weight.
-    static func estimate(padas: [String], duration: Double) -> TimingPlan {
+    static func secPerSyllable(for meter: String?) -> Double {
+        guard let meter else { return defaultSecPerSyllable }
+        let key = meter.trimmingCharacters(in: .whitespaces).lowercased()
+        return meterSecPerSyllable[key] ?? defaultSecPerSyllable
+    }
+
+    /// Distributes `duration` across `padas` following the synthesis
+    /// structure (speech + gaps, rescaled). Pass the mantra's `meter` when
+    /// known — it selects the meter's reference speech rate.
+    static func estimate(padas: [String], duration: Double, meter: String? = nil) -> TimingPlan {
         guard !padas.isEmpty, duration > 0 else { return TimingPlan(entries: []) }
-        let weights = padas.map(syllableWeight)
-        let total = weights.reduce(0, +)
-        var cursor = 0.0
-        var entries: [TimingEntry] = []
-        for (pada, w) in zip(padas, weights) {
-            let span = duration * (Double(w) / Double(total))
-            let end = min(cursor + span, duration)
-            entries.append(
-                TimingEntry(text: pada, start: cursor, end: end, estimated: true)
-            )
-            cursor = end
+        let sps = secPerSyllable(for: meter)
+        let n = padas.count
+        var speech = padas.map { Double(aksharaCount($0)) * sps }
+        let gaps = padas.map { pada -> Double in
+            let halant = pada.unicodeScalars.last.map { viramas.contains($0) } ?? false
+            return gapSeconds + (halant ? gapHalantSeconds : 0)
         }
-        // Snap the final boundary exactly to the duration.
-        if !entries.isEmpty {
-            let last = entries.removeLast()
-            entries.append(
-                TimingEntry(text: last.text, start: last.start, end: duration, estimated: true)
-            )
+        let gapTotal = gaps.dropLast().reduce(0, +)  // stitcher drops the trailing gap
+        let speechTotal = speech.reduce(0, +)
+        if speechTotal > 0, duration > gapTotal {
+            let k = (duration - gapTotal) / speechTotal
+            speech = speech.map { $0 * k }
+        }
+
+        var onsets: [Double] = []
+        var cursor = 0.0
+        for (i, s) in speech.enumerated() {
+            onsets.append(cursor)
+            cursor += s + (i < n - 1 ? gaps[i] : 0)
+        }
+
+        var entries: [TimingEntry] = []
+        for (i, pada) in padas.enumerated() {
+            let start = min(onsets[i], duration)
+            let end = min(i + 1 < n ? onsets[i + 1] : duration, duration)
+            entries.append(TimingEntry(text: pada, start: start, end: end, estimated: true))
         }
         return TimingPlan(entries: entries)
     }
