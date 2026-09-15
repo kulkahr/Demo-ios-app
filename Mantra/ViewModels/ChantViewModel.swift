@@ -47,6 +47,10 @@ final class ChantViewModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] state in
                 guard let self else { return }
+                // First audible playback anchors the session start time.
+                if state == .playing, self.sessionStart == nil {
+                    self.sessionStart = .now
+                }
                 if state == .finished {
                     self.recordSessionIfPending()
                 }

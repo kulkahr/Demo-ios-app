@@ -85,12 +85,15 @@ final class AudioPlayerService: ObservableObject {
                 // Resume from a seek-while-paused (or idle-seek) position: the
                 // original segment was invalidated by player.stop(), so
                 // schedule a new one starting at the seek target.
-                startEngineIfNeeded()
+                guard startEngineIfNeeded() else { return }
                 scheduleCurrentFile(startingAt: frame)
                 player.play()
                 pausedFrame = nil
             } else {
-                // Plain pause/resume: the segment is still scheduled.
+                // Plain pause/resume: the segment is still scheduled. Restart
+                // the engine first if an interruption stopped it, or the
+                // resume would be silent.
+                guard startEngineIfNeeded() else { return }
                 player.play()
             }
             state = .playing
@@ -103,7 +106,7 @@ final class AudioPlayerService: ObservableObject {
         loopsRemaining = max(totalLoops - 1, 0)
         loopIndex = 1
 
-        startEngineIfNeeded()
+        guard startEngineIfNeeded() else { return }
         scheduleCurrentFile()
         player.play()
         timePitch.rate = speed
@@ -151,10 +154,14 @@ final class AudioPlayerService: ObservableObject {
         currentTime = clamped
 
         if wasPlaying {
-            startEngineIfNeeded()
-            scheduleCurrentFile(startingAt: frame, generation: generation)
-            player.play()
-            pausedFrame = nil
+            if startEngineIfNeeded() {
+                scheduleCurrentFile(startingAt: frame, generation: generation)
+                player.play()
+                pausedFrame = nil
+            } else {
+                // Nothing is scheduled after player.stop(); reflect that.
+                state = .idle
+            }
         } else {
             if wasIdle {
                 // A seek from idle/finished arms a fresh chant session.
@@ -214,15 +221,21 @@ final class AudioPlayerService: ObservableObject {
         }
     }
 
-    private func startEngineIfNeeded() {
+    /// Starts the engine if it isn't running. Returns false when the engine
+    /// could not start (e.g. after a route-change error) so callers stay in
+    /// their current state instead of pretending to play.
+    @discardableResult
+    private func startEngineIfNeeded() -> Bool {
         if !engine.isRunning {
             do {
                 try engine.start()
             } catch {
-                // Engine start failure leaves state idle; UI shows transport disabled.
-                state = .idle
+                // Engine start failure leaves state unchanged; UI shows
+                // transport inactive rather than a stuck "playing" state.
+                return false
             }
         }
+        return true
     }
 
     // MARK: - Position polling
