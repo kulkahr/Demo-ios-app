@@ -93,6 +93,8 @@ def wav_duration(path: Path) -> float:
 
 
 def build_shard(mantras: list[dict], workdir: Path) -> Path:
+    # no_sandhi is REQUIRED by Vagdhenu's render.py (KeyError per clip if
+    # missing). true = padas are already traditionally word-split.
     shard = []
     for m in mantras:
         shard.append(
@@ -101,6 +103,7 @@ def build_shard(mantras: list[dict], workdir: Path) -> Path:
                 "meter": m["meter"],
                 "padas": m["padas"],
                 "seed": 42,
+                "no_sandhi": True,
                 "out": m["audioFileName"],
             }
         )

@@ -21,6 +21,7 @@ Mirrors Vagdhenu's batch shard JSON format (`src/render.py --shard`):
   "meter": "anushtubh",
   "padas": ["ॐ", "भूर्भुवः", "स्वः"],
   "seed": 42,
+  "no_sandhi": true,
   "text": "ॐ भूर्भुवः स्वः"
 }
 ```
@@ -31,6 +32,7 @@ Mirrors Vagdhenu's batch shard JSON format (`src/render.py --shard`):
 | `meter` | string | yes | Vagdhenu meter key, e.g. `anushtubh` |
 | `padas` | [string] | yes | Devanagari words, in chant order |
 | `seed` | int? | no | Optional determinism seed |
+| `no_sandhi` | bool | yes | Always `true` from the client — padas are already traditionally word-split; render.py requires the key and skips its automatic sandhi re-splitting when set |
 | `text` | string | no | Full verse string (used by worker-side sandhi/frontend when padas need re-splitting) |
 
 ### Response — success (200)

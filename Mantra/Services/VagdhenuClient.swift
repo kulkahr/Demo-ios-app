@@ -66,6 +66,10 @@ struct VagdhenuClient {
             "id": id,
             "meter": meter,
             "padas": padas,
+            // Required by render.py (indexed per clip; missing key fails every
+            // clip with KeyError). true = padas are already traditionally
+            // word-split; skip the renderer's automatic sandhi re-splitting.
+            "no_sandhi": true,
         ]
         if let seed { entry["seed"] = seed }
         return entry

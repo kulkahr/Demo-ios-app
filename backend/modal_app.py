@@ -154,6 +154,9 @@ class VagdhenuTTS:
                 "meter": meter,
                 "padas": padas,
                 "seed": seed if seed is not None else 42,
+                # Required by render.py (KeyError per clip if missing); padas
+                # arrive already word-split from the client.
+                "no_sandhi": True,
                 "out": f"{cache_key}.wav",
             }
             result = self.infer.local(entry)
