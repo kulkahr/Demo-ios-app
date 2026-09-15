@@ -93,10 +93,12 @@ Recorded after each completed chant for history/stats: `startedAt`, `completedAt
 Word-level sync is the core feature, so its design is explicit:
 
 - **Corpus path with sidecar:** if `mantras/timing/<mantra_id>.json` exists in the bundle it is used directly (produced at render time by the structural estimator below).
-- **Corpus path without sidecar:** `TimingEstimator` distributes the WAV duration across padas following Vagdhenu's synthesis structure (below); results are flagged as estimates.
+- **Corpus path without sidecar:** `TimingEstimator` distributes the WAV duration across padas following the synthesis structure (below); results are flagged as estimates.
 - **Custom path:** the Modal backend returns explicit word timings in the synthesis response (api-contract.md); the client uses them directly — no estimation.
 
-**Structural timing model (all paths):** Vagdhenu renders each pada as its own clip — speech length = aksharas × the meter's `sec_per_syllable` (bank.json) — and stitches clips with a fixed gap (`--gap 0.55s`, `+0.20s` after a virāma-final clip, trailing gap dropped). Word timings therefore follow that structure: onsets accumulate `speech + gap`, speech is globally rescaled so the plan spans the real WAV (the gate/F5 trim scales with speech; the gaps are exact silence), and each entry spans from its onset to the **next** onset so a short word is never skipped while still sounding. Implemented identically in `TimingEstimator.swift`, `scripts/render_corpus.py`, `scripts/kaggle_render.py` and `backend/modal_app.py` — changes must be applied to all four.
+**Clip structure (all paths):** Vagdhenu renders the verse as **one continuous clip**: the shard passes the padas space-joined into a single synthesis piece — exactly what the official demo's `Renderer.render_one()` does (it splits pasted text only on dandas/newlines). Passing each pada as its own clip instead makes `render.py` synthesize per-word clips and stitch them with 0.55 s silences (`--gap`), gate-trimming short clips (ॐ, स्वः, नः) to near-nothing — chopped audio. The `meter` still selects the reference chant; unknown names fall back to `vasantatilakā` by design.
+
+**Structural timing model (all paths):** within one continuous clip the chant pace is steady, so each word's span is **proportional to its akshara count** across the real WAV duration, and every entry spans from its onset to the **next** onset so a short word is never skipped while still sounding. (With no inter-word gaps the meter's `sec_per_syllable` and rescaling cancel out of the math.) Implemented identically in `TimingEstimator.swift`, `scripts/render_corpus.py`, `scripts/kaggle_render.py` and `backend/modal_app.py` — changes must be applied to all four.
 
 ### 5.4 Services
 
@@ -105,7 +107,7 @@ Word-level sync is the core feature, so its design is explicit:
 | `AudioPlayerService` | AVAudioEngine playback of local WAVs, loop count, speed, karaoke position callbacks |
 | `MantraRepository` | SwiftData seeding from `mantras.json`, CRUD for custom chants, favorites, session history |
 | `VagdhenuClient` | HTTPS client for the Modal endpoint, shard-JSON builder |
-| `TimingEstimator` | Structural word timings (speech + gaps, rescaled) when no sidecar exists |
+| `TimingEstimator` | Structural word timings (akshara-proportional) when no sidecar exists |
 
 ## 6. Directory layout
 

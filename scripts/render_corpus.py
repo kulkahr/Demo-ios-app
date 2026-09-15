@@ -35,39 +35,17 @@ TIMING_OUT_DIR = REPO_ROOT / "mantras" / "timing"
 VAGDHENU_ROOT = Path(os.environ.get("VAGDHENU_ROOT", "~/vagdhenu")).expanduser()
 
 # --- Karaoke timing estimator (structural model) -----------------------------
-# Vagdhenu synthesizes each pada as its own clip and stitches them with fixed
-# gaps (render.py: --gap 0.55s, +0.20s when the clip ends in virāma; the
-# trailing gap is dropped). Per-clip speech length is aksharas × the meter's
-# sec_per_syll from src/reference_bank/bank.json. Word onsets therefore follow
-# that structure; the speech rate is then globally rescaled so the plan spans
-# the real WAV — the residual (gate()/F5 trim) scales with speech, while the
-# gaps are exact digital silence.
+# Vagdhenu synthesizes the verse as ONE CONTINUOUS clip: the shard passes the
+# padas joined into a single synthesis piece (space-joined) — the same shape as
+# the official demo's Renderer.render_one(), which splits text only on
+# dandas/newlines. (Passing each pada as its own clip instead makes render.py
+# stitch per-word clips with 0.55s silences and gate-trim short words like
+# ॐ/स्वः/नः down to near-nothing — chopped audio.) Word onsets therefore
+# follow a steady chant pace: each word's span is proportional to its
+# akshara count across the real WAV duration. (With no inter-word gaps, the
+# meter's sec_per_syllable and rescaling cancel out of the math.)
 # PARITY: Mantra/Services/TimingEstimator.swift, scripts/kaggle_render.py and
 # backend/modal_app.py implement the same rule (architecture.md §5.3).
-
-METER_SPS = {
-    # ASCII stems (render.py's WAV-name keys) and IAST bank keys, s/syllable.
-    "anushtubh": 0.326, "anuṣṭubh": 0.326,
-    "pramanika": 0.275, "pramāṇikā": 0.275,
-    "vasantatilaka": 0.259, "vasantatilakā": 0.259,
-    "upajati": 0.273, "upajāti": 0.273,
-    "indravajra": 0.260, "indravajrā": 0.260,
-    "upendravajra": 0.269, "upendravajrā": 0.269,
-    "vamshastha": 0.255, "vaṃśastha": 0.255,
-    "rathoddhata": 0.301, "rathoddhatā": 0.301,
-    "shalini": 0.320, "śālinī": 0.320,
-    "indravamsha": 0.268, "indravaṃśā": 0.268,
-    "drutavilambita": 0.369,
-    "bhujangaprayata": 0.303, "bhujaṅgaprayāta": 0.303,
-    "malini": 0.268, "mālinī": 0.268,
-    "shardulavikridita": 0.273, "śārdūlavikrīḍita": 0.273,
-    "sragdhara": 0.310, "sragdharā": 0.310,
-    "vrutta1": 0.437, "vrutta-1": 0.437,
-    "gadya": 0.260, "gadya_mbtn": 0.260,
-}
-DEFAULT_SPS = 0.259   # render.py's unknown-meter fallback is vasantatilakā
-GAP_S = 0.55          # render.py --gap
-GAP_HALANT_S = 0.20   # render.py --gap_halant (added after a virāma-final clip)
 VIRAMAS = ("्", "್")  # Devanagari + Kannada virāma
 
 
@@ -92,36 +70,25 @@ def akshara_count(pada: str) -> int:
     return max(n, 1)
 
 
-def meter_sps(meter: str | None) -> float:
-    return METER_SPS.get((meter or "").strip().lower(), DEFAULT_SPS)
-
-
 def estimate_timing(padas: list[str], duration: float, meter: str | None = None) -> list[dict]:
-    """Structural karaoke timings: word onsets follow Vagdhenu's synthesis
-    structure (per-pada speech + fixed inter-pada gaps). Each entry spans from
-    its speech onset to the next entry's onset, so a word stays highlighted
-    through the pause after it and switches exactly at the next onset — short
-    words are never skipped while still sounding."""
+    """Structural karaoke timings for a continuously-rendered verse: each
+    word's span is proportional to its akshara count across the real WAV
+    duration. Every entry starts exactly where the previous one ends, so a
+    word stays highlighted until the next one sounds — short words are never
+    skipped. `meter` is accepted for API compatibility with the per-clip-gap
+    model this replaces; pacing is uniform within a single continuous clip,
+    so the meter cancels out of the math."""
     n = len(padas)
     if n == 0 or duration <= 0:
         return []
-    sps = meter_sps(meter)
-    speech = [akshara_count(p) * sps for p in padas]
-    gaps = [GAP_S + (GAP_HALANT_S if p.endswith(VIRAMAS) else 0.0) for p in padas]
-    gap_total = sum(gaps[:-1])  # the stitcher drops the trailing gap
-    speech_total = sum(speech)
-    if speech_total > 0 and duration > gap_total:
-        k = (duration - gap_total) / speech_total
-        speech = [s * k for s in speech]
-    onsets: list[float] = []
-    t = 0.0
-    for i, s in enumerate(speech):
-        onsets.append(t)
-        t += s + (gaps[i] if i < n - 1 else 0.0)
+    weights = [akshara_count(p) for p in padas]
+    total = sum(weights)
     timing: list[dict] = []
+    cum = 0
     for i, pada in enumerate(padas):
-        start = min(onsets[i], duration)
-        end = min(onsets[i + 1] if i + 1 < n else duration, duration)
+        start = duration * cum / total
+        cum += weights[i]
+        end = duration if i == n - 1 else min(duration * cum / total, duration)
         timing.append(
             {"text": pada, "start": round(start, 3), "end": round(end, 3), "estimated": True}
         )
@@ -137,14 +104,23 @@ def wav_duration(path: Path) -> float:
 
 def build_shard(mantras: list[dict], workdir: Path) -> Path:
     # no_sandhi is REQUIRED by Vagdhenu's render.py (KeyError per clip if
-    # missing). true = padas are already traditionally word-split.
+    # missing). true = text is already traditionally word-split; skip the
+    # renderer's automatic sandhi re-splitting.
+    #
+    # ONE CONTINUOUS PIECE per mantra: padas are space-joined into a single
+    # synthesis clip — exactly what the official demo's Renderer.render_one()
+    # does for danda-free text. (A shard entry of per-word padas makes
+    # render.py synthesize one clip per word and stitch them with 0.55s
+    # silences; short clips get gate-trimmed to near-nothing — chopped audio.)
+    # The `meter` is still required: it selects the reference chant (unknown
+    # names fall back to vasantatilakā by design).
     shard = []
     for m in mantras:
         shard.append(
             {
                 "id": m["stableID"],
                 "meter": m["meter"],
-                "padas": m["padas"],
+                "padas": [" ".join(m["padas"])],
                 "seed": 42,
                 "no_sandhi": True,
                 "out": m["audioFileName"],

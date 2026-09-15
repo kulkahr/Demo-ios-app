@@ -3,11 +3,13 @@ import Testing
 @testable import Mantra
 
 /// SDLC Phase 5: Swift Testing suite for the timing engine.
-/// The structural model mirrors Vagdhenu's synthesis (per-pada speech =
-/// aksharas × meter sec-per-syllable + fixed inter-pada gaps, rescaled to the
-/// audio). Expected values are cross-checked against the Python
-/// implementations in `scripts/render_corpus.py`, `scripts/kaggle_render.py`
-/// and `backend/modal_app.py` (scalar-level parity).
+/// The structural model mirrors Vagdhenu's synthesis: the verse is rendered
+/// as ONE CONTINUOUS clip (padas space-joined in the shard — the official
+/// demo's Renderer.render_one() shape), so each word's span is proportional
+/// to its akshara count across the audio duration. Expected values are
+/// cross-checked against the Python implementations in
+/// `scripts/render_corpus.py`, `scripts/kaggle_render.py` and
+/// `backend/modal_app.py` (scalar-level parity).
 struct TimingEstimatorTests {
     @Test func aksharasMatchVagdhenuNAksharas() {
         // Independent vowel, non-halant consonant, halant cluster, ॐ.
@@ -29,17 +31,6 @@ struct TimingEstimatorTests {
         #expect(TimingEstimator.aksharaCount("नावधीतमस्तु") == 6)
     }
 
-    @Test func meterSelectsReferenceSpeechRate() {
-        #expect(TimingEstimator.secPerSyllable(for: "anushtubh") == 0.326)
-        #expect(TimingEstimator.secPerSyllable(for: "anuṣṭubh") == 0.326)
-        // Unknown meter (e.g. "gayatri") falls back to vasantatilakā's rate,
-        // matching render.py's FALLBACK_METER.
-        #expect(TimingEstimator.secPerSyllable(for: "gayatri")
-                == TimingEstimator.defaultSecPerSyllable)
-        #expect(TimingEstimator.secPerSyllable(for: nil)
-                == TimingEstimator.defaultSecPerSyllable)
-    }
-
     @Test func estimateCoversFullDurationInOrder() {
         let padas = ["ॐ", "भूर्भुवः", "स्वः"]
         let plan = TimingEstimator.estimate(padas: padas, duration: 10)
@@ -47,7 +38,7 @@ struct TimingEstimatorTests {
         #expect(plan.entries[0].start == 0)
         #expect(plan.entries.last?.end == 10)
         // Monotonic, non-overlapping, gap-free: every entry starts exactly
-        // where the previous one ends.
+        // where the previous one ends (one continuous clip, no silences).
         for pair in zip(plan.entries, plan.entries.dropFirst()) {
             #expect(pair.0.end == pair.1.start)
         }
@@ -70,47 +61,48 @@ struct TimingEstimatorTests {
     }
 
     @Test func longerWordsGetLongerSpans() {
-        // भूर्भुवः (4 aksharas) vs ॐ (1 akshara): the speech portion of the
-        // longer word must dominate its span.
+        // भूर्भुवः (3 aksharas) vs ॐ (1 akshara): the longer word's span
+        // must dominate.
         let plan = TimingEstimator.estimate(padas: ["भूर्भुवः", "ॐ"], duration: 9)
         let longSpan = plan.entries[0].duration
         let shortSpan = plan.entries[1].duration
         #expect(longSpan > shortSpan)
+        // And proportionally: 3:1 over 9s → 6.75s vs 2.25s.
+        #expect(abs(longSpan - 6.75) < 0.001)
+        #expect(abs(shortSpan - 2.25) < 0.001)
     }
 
     @Test func gayatriBoundariesMatchPythonReference() {
-        // Golden values from scripts/render_corpus.py estimate_timing with
-        // the real rendered durations (meter "gayatri" -> vasantatilaka rate;
-        // 28 aksharas, gap_total 5.70, k = (11.753 − 5.70) / (28 × 0.259)
-        // ≈ 0.8347).
+        // Golden values from scripts/render_corpus.py estimate_timing for a
+        // continuous render (the official demo's shape) of duration 7.03s —
+        // the website render of this exact verse. 28 aksharas total
+        // (1+3+1+7+2+3+3+2+1+1+4); each boundary = cum/28 × 7.03.
         let padas = [
             "ॐ", "भूर्भुवः", "स्वः", "तत्सवितुर्वरेण्यम्", "भर्गो", "देवस्य",
             "धीमहि", "धियो", "यो", "नः", "प्रचोदयात्",
         ]
-        let plan = TimingEstimator.estimate(padas: padas, duration: 11.753, meter: "gayatri")
+        let plan = TimingEstimator.estimate(padas: padas, duration: 7.03, meter: "gayatri")
         #expect(plan.entries.count == 11)
-        #expect(abs(plan.entries[0].end - 0.766) < 0.01)          // ॐ speech
-        #expect(abs(plan.entries[1].start - 0.766) < 0.01)        // भूर्भुवः onset
-        #expect(abs(plan.entries[1].end - 1.965) < 0.01)
-        #expect(abs(plan.entries[3].start - 2.731) < 0.01)        // तत्सवितुर्वरेण्यम्
-        #expect(abs(plan.entries.last!.end - 11.753) < 0.001)
-        // Short words keep usable spans.
-        #expect(plan.entries.first!.duration > 0.4)
-        #expect(plan.entries[8].duration > 0.4)                   // यो
+        #expect(abs(plan.entries[0].end - 0.251) < 0.01)          // ॐ (1)
+        #expect(abs(plan.entries[1].start - 0.251) < 0.01)        // भूर्भुवः onset
+        #expect(abs(plan.entries[1].end - 1.004) < 0.01)          // +3
+        #expect(abs(plan.entries[3].start - 1.255) < 0.01)        // तत्सवितुर्वरेण्यम्
+        #expect(abs(plan.entries[3].end - 3.013) < 0.01)          // +7
+        #expect(abs(plan.entries[8].end - 5.775) < 0.01)          // यो (cum 23)
+        #expect(abs(plan.entries[9].end - 6.026) < 0.01)          // नः (cum 24)
+        #expect(abs(plan.entries.last!.end - 7.03) < 0.001)
+        // Short words keep usable spans (~0.25s each here).
+        #expect(plan.entries.first!.duration > 0.2)
+        #expect(plan.entries[8].duration > 0.2)                   // यो
+        // `meter` is accepted but must not skew the plan (single continuous
+        // clip → the meter cancels out).
+        let withoutMeter = TimingEstimator.estimate(padas: padas, duration: 7.03)
+        #expect(plan.entries.map(\.start) == withoutMeter.entries.map(\.start))
     }
 
     @Test func emptyInputYieldsEmptyPlan() {
         #expect(TimingEstimator.estimate(padas: [], duration: 5).entries.isEmpty)
         #expect(TimingEstimator.estimate(padas: ["ॐ"], duration: 0).entries.isEmpty)
-    }
-
-    @Test func halantFinalPadasGetLongerGaps() {
-        // प्रचोदयात् ends in virāma → +0.20s gap after it, mirroring
-        // render.py's --gap_halant.
-        let a = TimingEstimator.estimate(padas: ["भर्गो", "देवस्य"], duration: 6)
-        let b = TimingEstimator.estimate(padas: ["प्रचोदयात्", "देवस्य"], duration: 6)
-        // With the same duration, the halant gap pushes देवस्य's onset later.
-        #expect(b.entries[1].start > a.entries[1].start)
     }
 }
 

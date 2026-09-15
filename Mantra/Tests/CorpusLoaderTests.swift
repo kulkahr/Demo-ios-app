@@ -26,10 +26,10 @@ struct CorpusTests {
     }
 
     @Test func pythonAndSwiftEstimatorsAgree() {
-        // Mirrors scripts/render_corpus.py syllable_weight. The contract is
-        // exact numeric parity per pada; see TimingEstimatorTests for the
-        // full reference-weight table.
-        #expect(TimingEstimator.syllableWeight("गायत्रीमन्त्र") == 12)
-        #expect(TimingEstimator.syllableWeight("गायत्रीमन्त्र") > TimingEstimator.syllableWeight("ॐ"))
+        // Mirrors scripts/render_corpus.py akshara_count (n_aksharas port).
+        // The contract is exact numeric parity per pada; see
+        // TimingEstimatorTests for the full reference-value list.
+        #expect(TimingEstimator.aksharaCount("गायत्रीमन्त्र") == 5)
+        #expect(TimingEstimator.aksharaCount("गायत्रीमन्त्र") > TimingEstimator.aksharaCount("ॐ"))
     }
 }

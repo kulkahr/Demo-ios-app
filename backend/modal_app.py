@@ -71,36 +71,71 @@ volume = modal.Volume.from_name("vagdhenu-cache", create_if_missing=True)
 class VagdhenuTTS:
     @modal.enter()
     def load(self):
-        """Import Vagdhenu's render pipeline once per container."""
-        import sys
-
-        sys.path.insert(0, "/root/vagdhenu")
-        os.environ.setdefault("CHAMP_ROOT", "/cache/models")
-
-        # If Vagdhenu's internal API differs, this is the single integration
-        # point to adjust.
-        from src.render import render_shard  # type: ignore
-
-        self.render_shard = render_shard
+        """Verify the Vagdhenu checkout before the first request arrives."""
+        self.vagdhenu = Path("/root/vagdhenu")
+        render = self.vagdhenu / "src" / "render.py"
+        if not render.exists():
+            raise RuntimeError(f"Vagdhenu render script missing at {render}")
+        # Env for the render subprocess: weights root + BigVGAN on PYTHONPATH.
+        # BigVGAN is a cloned repo (not a pip package); render.py's bare
+        # `import bigvgan` needs it on the path — same fix the Kaggle script
+        # applies.
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            p for p in [str(self.vagdhenu / "BigVGAN"), env.get("PYTHONPATH", "")] if p
+        )
+        env.setdefault("CHAMP_ROOT", "/cache/models")
+        self.render_env = env
 
     @modal.method()
     def infer(self, entry: dict) -> dict:
-        """Run one shard entry through Vagdhenu inside the container."""
+        """Run one shard entry through Vagdhenu's batch render.py.
+
+        render.py is an argparse batch script (no importable render_shard),
+        so the entry goes through a shard file + subprocess — the same
+        invocation the corpus scripts use.
+        """
+        import subprocess
+        import sys
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
-            shard_path = Path(tmp) / "shard.json"
-            shard_path.write_text(json.dumps([entry]))
-            results = self.render_shard(
-                shard_path=str(shard_path),
-                results_path=str(Path(tmp) / "results.json"),
-                outdir=tmp,
-            )
-            # Expect a wav path in results; adapt if Vagdhenu's return shape differs.
-            if isinstance(results, dict) and entry["id"] in results:
-                wav_path = Path(results[entry["id"]])
-            else:
-                wav_path = Path(tmp) / entry.get("out", "out.wav")
+            tmp_path = Path(tmp)
+            # ONE CONTINUOUS PIECE: join the word-padas into a single
+            # synthesis clip — the official demo's Renderer.render_one()
+            # renders danda-free text exactly this way. Per-word padas make
+            # render.py stitch 0.55s silences between clips and gate-trim
+            # short words (ॐ, स्वः, नः) to near-nothing.
+            shard_entry = {
+                "id": entry["id"],
+                "meter": entry["meter"],
+                "padas": [" ".join(entry["padas"])],
+                "seed": entry.get("seed", 42) if entry.get("seed") is not None else 42,
+                # Required by render.py (KeyError per clip if missing); the
+                # text arrives already traditionally word-split.
+                "no_sandhi": True,
+            }
+            shard_path = tmp_path / "shard.json"
+            shard_path.write_text(json.dumps([shard_entry], ensure_ascii=False))
+
+            cmd = [
+                sys.executable,
+                str(self.vagdhenu / "src" / "render.py"),
+                "--shard", str(shard_path),
+                "--results", str(tmp_path / "results.json"),
+                "--outdir", str(tmp_path),  # render.py writes <outdir>/<id>.wav
+            ]
+            subprocess.run(cmd, cwd=self.vagdhenu, check=True, env=self.render_env)
+
+            # render.py exits 0 even when a clip fails (error recorded in
+            # results.json) — surface it instead of shipping a missing wav.
+            results = json.loads((tmp_path / "results.json").read_text())
+            if results and "error" in results[0]:
+                raise RuntimeError(f"render failed for {entry['id']}: {results[0]['error']}")
+
+            wav_path = tmp_path / f"{entry['id']}.wav"
+            if not wav_path.exists():
+                raise RuntimeError(f"render produced no wav for {entry['id']}")
             wav_bytes = wav_path.read_bytes()
             return {"audio": wav_bytes, "duration": _wav_duration(wav_bytes)}
 
@@ -133,7 +168,13 @@ class VagdhenuTTS:
                     detail={"code": "invalid_request", "message": "meter and non-empty padas are required"},
                 )
             seed = request.get("seed")
+            # request_id becomes a filename (<outdir>/<id>.wav) — sanitize it.
             request_id = str(request.get("id") or "custom-unknown")
+            if not request_id or set(request_id) & set('/\\:\0') or ".." in request_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "invalid_request", "message": "invalid id"},
+                )
 
             # --- Cache lookup (volume-backed) -----------------------------
             cache_key = hashlib.sha256(
@@ -154,10 +195,6 @@ class VagdhenuTTS:
                 "meter": meter,
                 "padas": padas,
                 "seed": seed if seed is not None else 42,
-                # Required by render.py (KeyError per clip if missing); padas
-                # arrive already word-split from the client.
-                "no_sandhi": True,
-                "out": f"{cache_key}.wav",
             }
             result = self.infer.local(entry)
 
@@ -194,30 +231,8 @@ def _wav_duration(wav_bytes: bytes) -> float:
         return wf.getnframes() / float(rate)
 
 
-METER_SPS = {
-    # sec_per_syll from Vagdhenu's src/reference_bank/bank.json; ASCII stems
-    # (render.py's WAV-name keys) plus IAST bank keys.
-    "anushtubh": 0.326, "anuṣṭubh": 0.326,
-    "pramanika": 0.275, "pramāṇikā": 0.275,
-    "vasantatilaka": 0.259, "vasantatilakā": 0.259,
-    "upajati": 0.273, "upajāti": 0.273,
-    "indravajra": 0.260, "indravajrā": 0.260,
-    "upendravajra": 0.269, "upendravajrā": 0.269,
-    "vamshastha": 0.255, "vaṃśastha": 0.255,
-    "rathoddhata": 0.301, "rathoddhatā": 0.301,
-    "shalini": 0.320, "śālinī": 0.320,
-    "indravamsha": 0.268, "indravaṃśā": 0.268,
-    "drutavilambita": 0.369,
-    "bhujangaprayata": 0.303, "bhujaṅgaprayāta": 0.303,
-    "malini": 0.268, "mālinī": 0.268,
-    "shardulavikridita": 0.273, "śārdūlavikrīḍita": 0.273,
-    "sragdhara": 0.310, "sragdharā": 0.310,
-    "vrutta1": 0.437, "vrutta-1": 0.437,
-    "gadya": 0.260, "gadya_mbtn": 0.260,
-}
-DEFAULT_SPS = 0.259   # render.py's unknown-meter fallback is vasantatilakā
-GAP_S = 0.55          # render.py --gap
-GAP_HALANT_S = 0.20   # render.py --gap_halant (added after a virāma-final clip)
+# --- Word timings (same rule as scripts/render_corpus.py) ---------------------
+
 VIRAMAS = ("्", "್")  # Devanagari + Kannada virāma
 
 
@@ -240,41 +255,28 @@ def akshara_count(pada: str) -> int:
     return max(n, 1)
 
 
-def meter_sps(meter: str | None) -> float:
-    return METER_SPS.get((meter or "").strip().lower(), DEFAULT_SPS)
-
-
 def estimate_timing(padas: list[str], duration: float, meter: str | None = None) -> list[dict]:
     """Structural timing distribution.
 
     Mirrors scripts/render_corpus.py and Mantra/Services/TimingEstimator.swift.
-    Word onsets follow Vagdhenu's synthesis structure: each pada is a separate
-    clip (speech = aksharas × the meter's sec-per-syllable) stitched with a
-    fixed gap (0.55s; +0.20s after a virāma-final clip; trailing gap dropped).
-    Speech is then rescaled so the plan spans the real WAV. Each entry spans
-    from its onset to the next onset, so short words are never skipped while
-    still sounding.
+    The verse is synthesized as one continuous clip (word-padas space-joined —
+    the official demo's render_one() shape), so each word's span is
+    proportional to its akshara count across the real WAV duration. Each entry
+    spans from its onset to the next onset, so short words are never skipped
+    while still sounding. `meter` is accepted for API compatibility; the meter
+    cancels out of the math for a single continuous clip.
     """
     n = len(padas)
     if n == 0 or duration <= 0:
         return []
-    sps = meter_sps(meter)
-    speech = [akshara_count(p) * sps for p in padas]
-    gaps = [GAP_S + (GAP_HALANT_S if p.endswith(VIRAMAS) else 0.0) for p in padas]
-    gap_total = sum(gaps[:-1])  # the stitcher drops the trailing gap
-    speech_total = sum(speech)
-    if speech_total > 0 and duration > gap_total:
-        k = (duration - gap_total) / speech_total
-        speech = [s * k for s in speech]
-    onsets: list[float] = []
-    t = 0.0
-    for i, s in enumerate(speech):
-        onsets.append(t)
-        t += s + (gaps[i] if i < n - 1 else 0.0)
+    weights = [akshara_count(p) for p in padas]
+    total = sum(weights)
     timing: list[dict] = []
+    cum = 0
     for i, pada in enumerate(padas):
-        start = min(onsets[i], duration)
-        end = min(onsets[i + 1] if i + 1 < n else duration, duration)
+        start = duration * cum / total
+        cum += weights[i]
+        end = duration if i == n - 1 else min(duration * cum / total, duration)
         timing.append(
             {"text": pada, "start": round(start, 3), "end": round(end, 3), "estimated": True}
         )

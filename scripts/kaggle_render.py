@@ -97,33 +97,13 @@ MANTRAS = [
     },
 ]
 
-# --- Timing estimator: mirrors scripts/render_corpus.py on your Mac
-# (structural model: per-pada speech = aksharas × meter sec-per-syllable +
-# fixed inter-pada gaps, rescaled to the WAV duration; keep all
-# implementations in parity — TimingEstimator.swift, backend/modal_app.py).
-
-METER_SPS = {
-    "anushtubh": 0.326, "anuṣṭubh": 0.326,
-    "pramanika": 0.275, "pramāṇikā": 0.275,
-    "vasantatilaka": 0.259, "vasantatilakā": 0.259,
-    "upajati": 0.273, "upajāti": 0.273,
-    "indravajra": 0.260, "indravajrā": 0.260,
-    "upendravajra": 0.269, "upendravajrā": 0.269,
-    "vamshastha": 0.255, "vaṃśastha": 0.255,
-    "rathoddhata": 0.301, "rathoddhatā": 0.301,
-    "shalini": 0.320, "śālinī": 0.320,
-    "indravamsha": 0.268, "indravaṃśā": 0.268,
-    "drutavilambita": 0.369,
-    "bhujangaprayata": 0.303, "bhujaṅgaprayāta": 0.303,
-    "malini": 0.268, "mālinī": 0.268,
-    "shardulavikridita": 0.273, "śārdūlavikrīḍita": 0.273,
-    "sragdhara": 0.310, "sragdharā": 0.310,
-    "vrutta1": 0.437, "vrutta-1": 0.437,
-    "gadya": 0.260, "gadya_mbtn": 0.260,
-}
-DEFAULT_SPS = 0.259   # render.py's unknown-meter fallback is vasantatilakā
-GAP_S = 0.55          # render.py --gap
-GAP_HALANT_S = 0.20   # render.py --gap_halant (added after a virāma-final clip)
+# --- Timing estimator: mirrors scripts/render_corpus.py on your Mac.
+# The verse is rendered as ONE CONTINUOUS clip (padas space-joined in the
+# shard — same shape as the official demo's Renderer.render_one(); per-word
+# clips get stitched with 0.55s silences and short words are gate-trimmed to
+# near-nothing). Each word's karaoke span is proportional to its akshara
+# count across the WAV duration. Keep all implementations in parity —
+# TimingEstimator.swift, backend/modal_app.py.
 VIRAMAS = ("्", "್")  # Devanagari + Kannada virāma
 
 
@@ -146,36 +126,23 @@ def akshara_count(pada: str) -> int:
     return max(n, 1)
 
 
-def meter_sps(meter: str | None) -> float:
-    return METER_SPS.get((meter or "").strip().lower(), DEFAULT_SPS)
-
-
 def estimate_timing(padas: list[str], duration: float, meter: str | None = None) -> list[dict]:
-    """Structural karaoke timings: onsets follow Vagdhenu's synthesis
-    structure (per-pada speech + fixed inter-pada gaps, rescaled to the real
-    WAV duration). Each entry spans from its speech onset to the next entry's
-    onset, so a word stays highlighted through the pause after it — short
-    words are never skipped while still sounding."""
+    """Structural karaoke timings for a continuously-rendered verse: each
+    word's span is proportional to its akshara count across the real WAV
+    duration, so a word stays highlighted until the next one sounds — short
+    words are never skipped. `meter` is accepted for API compatibility; the
+    meter cancels out of the math for a single continuous clip."""
     n = len(padas)
     if n == 0 or duration <= 0:
         return []
-    sps = meter_sps(meter)
-    speech = [akshara_count(p) * sps for p in padas]
-    gaps = [GAP_S + (GAP_HALANT_S if p.endswith(VIRAMAS) else 0.0) for p in padas]
-    gap_total = sum(gaps[:-1])  # the stitcher drops the trailing gap
-    speech_total = sum(speech)
-    if speech_total > 0 and duration > gap_total:
-        k = (duration - gap_total) / speech_total
-        speech = [s * k for s in speech]
-    onsets: list[float] = []
-    t = 0.0
-    for i, s in enumerate(speech):
-        onsets.append(t)
-        t += s + (gaps[i] if i < n - 1 else 0.0)
+    weights = [akshara_count(p) for p in padas]
+    total = sum(weights)
     timing: list[dict] = []
+    cum = 0
     for i, pada in enumerate(padas):
-        start = min(onsets[i], duration)
-        end = min(onsets[i + 1] if i + 1 < n else duration, duration)
+        start = duration * cum / total
+        cum += weights[i]
+        end = duration if i == n - 1 else min(duration * cum / total, duration)
         timing.append({"text": pada, "start": round(start, 3), "end": round(end, 3), "estimated": True})
     return timing
 
@@ -386,13 +353,17 @@ def run_setup() -> None:
 def build_shard(workdir: Path) -> Path:
     # no_sandhi is REQUIRED by render.py (it indexes the key per clip; a
     # missing key fails every clip with KeyError 'no_sandhi'). true = our
-    # padas are already traditionally word-split; skip auto re-splitting —
-    # mirrors Vagdhenu's own production shard example.
+    # text is already traditionally word-split; skip auto re-splitting.
+    #
+    # ONE CONTINUOUS PIECE per mantra: padas are space-joined into a single
+    # synthesis clip — exactly what the official demo's Renderer.render_one()
+    # does for danda-free text. (Per-word padas make render.py stitch 0.55s
+    # silences between clips and gate-trim short words to near-nothing.)
     shard = [
         {
             "id": m["stableID"],
             "meter": m["meter"],
-            "padas": m["padas"],
+            "padas": [" ".join(m["padas"])],
             "seed": 42,
             "no_sandhi": True,
             "out": m["audioFileName"],
