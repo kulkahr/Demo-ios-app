@@ -92,6 +92,8 @@ The worker keeps a Modal Volume cache keyed by `(meter, padas, seed)`. A cache h
 ## Timing rules
 
 - `timing` must contain exactly one entry per pada, in order.
-- Word boundaries come from the render pipeline when available; otherwise the worker estimates them the same way `TimingEstimator` does on-device (structural model: the verse is synthesized as one continuous clip with the word-padas space-joined — the official demo's `render_one()` shape — so each word's span is proportional to its akshara count across the audio duration; each entry spans from its onset to the next onset), marking `estimated: true`.
+- Word boundaries come from the render pipeline when available; otherwise the worker estimates them the same way `TimingEstimator` does on-device (structural model: the verse is synthesized as one continuous clip with the word-padas space-joined — the official demo's `render_one()` shape — so each word's span is proportional to its akshara count across the audio duration; each entry spans from its onset to the next onset), marking `estimated: true`. Unlike the corpus path, the worker does **not** subtract measured pauses — the client's uniform fallback must match a plan computable before playback.
+- **OM spelling:** request `padas` may use `ॐ`; the worker's model text spells it `ओं` (long-ō, the traditional chant spelling) — the frontend's ಒಂ (short-o) mapping is out-of-distribution and the model can drop it.
+- The model text the worker sends to Vagdhenu joins the padas with spaces (one continuous piece); `padas` itself stays the display word list.
 - Entries must be contiguous — each entry's `start` equals the previous entry's `end` — so highlight switches happen exactly at onsets and no word is skipped while still sounding.
 - Clients must clamp: if `end > duration`, clamp to `duration`.

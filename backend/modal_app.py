@@ -31,7 +31,9 @@ import hashlib
 import hmac
 import io
 import json
+import math
 import os
+import struct
 import wave
 from pathlib import Path
 
@@ -41,10 +43,11 @@ import modal
 image = (
     modal.Image.debian_slim(python_version="3.10")
     .apt_install("git", "ffmpeg", "libsndfile1")
-    .pip_install(
-        "torch==2.4.0",
-        "torchaudio==2.4.0",
-        "--index-url", "https://download.pytorch.org/whl/cu121",
+    # pip flags can't go through pip_install's package list (rejected by
+    # current Modal versions), so the cu121 index is set via a shell command.
+    .run_commands(
+        "pip install torch==2.4.0 torchaudio==2.4.0 "
+        "--index-url https://download.pytorch.org/whl/cu121"
     )
     .pip_install("fastapi[standard]", "numpy", "soundfile")
     .run_commands(
@@ -109,7 +112,7 @@ class VagdhenuTTS:
             shard_entry = {
                 "id": entry["id"],
                 "meter": entry["meter"],
-                "padas": [" ".join(entry["padas"])],
+                "padas": [model_text_from_padas(entry["padas"])],
                 "seed": entry.get("seed", 42) if entry.get("seed") is not None else 42,
                 # Required by render.py (KeyError per clip if missing); the
                 # text arrives already traditionally word-split.
@@ -199,7 +202,9 @@ class VagdhenuTTS:
             result = self.infer.local(entry)
 
             # --- Word timings (same rule as scripts/render_corpus.py) ------
-            timing = estimate_timing(padas, result["duration"], meter=meter)
+            timing = estimate_timing(
+                padas, result["duration"], meter=meter, wav_bytes=result["audio"]
+            )
 
             # --- Persist to cache -------------------------------------------
             wav_cache.write_bytes(result["audio"])
@@ -236,6 +241,20 @@ def _wav_duration(wav_bytes: bytes) -> float:
 VIRAMAS = ("्", "್")  # Devanagari + Kannada virāma
 
 
+def model_text_from_padas(padas: list[str]) -> str:
+    """Space-joined synthesis text for one continuous clip.
+
+    The OM symbol (U+0950) is spelled out as ओं — the traditional long-ō
+    chant orthography the Kannada-routed model is trained on. ॐ routes to
+    SLP1 "oM" → ಒಂ (short-o), which is out-of-distribution and gets
+    swallowed by the model (observed: Gāyatrī rendered without its OM);
+    ओं routes to ಓಂ, which the chant corpus contains. Display padas keep
+    the ॐ symbol; only the model text changes. Akshara counts are identical
+    (both = 1), so timing weights are unaffected.
+    """
+    return " ".join(padas).replace("\u0950", "\u0913\u0902")  # ॐ → ओं
+
+
 def akshara_count(pada: str) -> int:
     """Syllables in a pada — port of render.py's n_aksharas (Devanagari +
     Kannada ranges). Independent vowels and non-halant consonants count 1; a
@@ -255,28 +274,134 @@ def akshara_count(pada: str) -> int:
     return max(n, 1)
 
 
-def estimate_timing(padas: list[str], duration: float, meter: str | None = None) -> list[dict]:
-    """Structural timing distribution.
+def _wav_energy_bytes(wav_bytes: bytes, win_ms: float = 20.0) -> tuple[float, list[float]]:
+    """Frame-RMS envelope of an in-memory PCM wav: (duration, rms 0..1)."""
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        rate = wf.getframerate()
+        duration = wf.getnframes() / float(rate) if rate else 0.0
+        width = wf.getsampwidth()
+        data = wf.readframes(wf.getnframes())
+    width = max(width, 1)
+    n = len(data) // width
+    fmt = {1: "B", 2: "h", 4: "i"}.get(width, "h")
+    samples = struct.unpack(f"<{n}{fmt}", data[: n * width])
+    if width == 1:
+        samples = [s - 128 for s in samples]
+    win = max(int(rate * win_ms / 1000.0), 1)
+    rms = []
+    for i in range(0, len(samples), win):
+        chunk = samples[i : i + win]
+        r = math.sqrt(sum(s * s for s in chunk) / max(len(chunk), 1)) / 32768.0
+        rms.append(r)
+    return duration, rms
 
-    Mirrors scripts/render_corpus.py and Mantra/Services/TimingEstimator.swift.
-    The verse is synthesized as one continuous clip (word-padas space-joined —
-    the official demo's render_one() shape), so each word's span is
-    proportional to its akshara count across the real WAV duration. Each entry
-    spans from its onset to the next onset, so short words are never skipped
-    while still sounding. `meter` is accepted for API compatibility; the meter
-    cancels out of the math for a single continuous clip.
+
+def measure_pauses(
+    wav_bytes: bytes,
+    padas: list[str],
+    total_aksharas: int,
+    win_ms: float = 20.0,
+    silence_rms: float = 0.02,
+    min_silence_s: float = 0.30,
+    min_gap_s: float = 0.35,
+    margin_s: float = 0.03,
+    max_pauses: int = 16,
+) -> list[float]:
+    """Real silences in the rendered WAV, attributed to the word before each.
+
+    Same rule as scripts/render_corpus.py's measure_pauses (file-based):
+    consecutive frames below `silence_rms` spanning at least `min_silence_s`
+    are a pause (leading/trailing `min_gap_s` excluded); each pause is
+    attributed to the word whose proportional boundary it follows, minus a
+    small `margin_s` so the highlight cuts off just before the breath.
+    """
+    if not wav_bytes or total_aksharas <= 0 or not padas:
+        return []
+    try:
+        duration, rms = _wav_energy_bytes(wav_bytes, win_ms=win_ms)
+    except Exception:
+        return []  # undecodable audio: fall back to the uniform plan
+    if duration <= 0 or not rms:
+        return []
+    n = len(padas)
+    boundaries: list[float] = []
+    cum = 0
+    for p in padas[:-1]:
+        cum += akshara_count(p)
+        boundaries.append(duration * cum / total_aksharas)
+
+    spans: list[tuple[float, float]] = []
+    in_silence = False
+    silence_start = 0.0
+    for i, r in enumerate(rms):
+        t = i * win_ms / 1000.0
+        if r < silence_rms and not in_silence:
+            in_silence = True
+            silence_start = t
+        elif r >= silence_rms and in_silence:
+            in_silence = False
+            if t - silence_start >= min_silence_s and min_gap_s < silence_start:
+                spans.append((silence_start, t))
+    if in_silence and duration - silence_start >= min_silence_s and min_gap_s < silence_start:
+        spans.append((silence_start, duration))
+
+    pauses = [0.0] * n
+    attributed = 0
+    for pause_start, pause_end in spans:
+        if attributed >= max_pauses:
+            break
+        owner = 0
+        for j, b in enumerate(boundaries):
+            if b <= pause_start + win_ms / 1000.0:
+                owner = j + 1
+        pauses[owner] = max(0.0, pause_end - pause_start - margin_s)
+        attributed += 1
+    return pauses
+
+
+def estimate_timing(
+    padas: list[str],
+    duration: float,
+    meter: str | None = None,
+    wav_bytes: bytes | None = None,
+) -> list[dict]:
+    """Phrase-aware structural timing distribution.
+
+    Mirrors scripts/render_corpus.py and Mantra/Services/TimingEstimator.swift
+    (the Swift copy is the on-device uniform fallback for custom verses). The
+    verse is synthesized as one continuous clip (word-padas space-joined —
+    the official demo's render_one() shape), so each word's speech span is
+    proportional to its akshara count. When `wav_bytes` is given, the REAL
+    silences are measured: speech spans are scaled to the non-silent duration
+    (duration − pauses) and each measured pause is appended after its word —
+    so onsets after a mid-verse breath move EARLIER (matching the real chant)
+    instead of drifting late. Every entry spans from its onset to the next
+    onset, so short words are never skipped while still sounding. `meter` is
+    accepted for API compatibility; the meter cancels out of the math for a
+    single continuous clip.
     """
     n = len(padas)
     if n == 0 or duration <= 0:
         return []
     weights = [akshara_count(p) for p in padas]
     total = sum(weights)
+
+    pauses = measure_pauses(wav_bytes, padas, total) if wav_bytes else []
+    if len(pauses) != n:
+        pauses = [0.0] * n  # no/unmeasurable audio: pure uniform plan
+    pause_total = sum(pauses)
+    if pause_total >= duration:
+        pauses = [0.0] * n  # pathological measurement: fall back to uniform
+        pause_total = 0.0
+    scale = (duration - pause_total) / total  # speech seconds per akshara
+
     timing: list[dict] = []
-    cum = 0
+    cursor = 0.0
     for i, pada in enumerate(padas):
-        start = duration * cum / total
-        cum += weights[i]
-        end = duration if i == n - 1 else min(duration * cum / total, duration)
+        start = cursor
+        cursor += weights[i] * scale
+        end = duration if i == n - 1 else min(cursor + pauses[i], duration)
+        cursor = end
         timing.append(
             {"text": pada, "start": round(start, 3), "end": round(end, 3), "estimated": True}
         )

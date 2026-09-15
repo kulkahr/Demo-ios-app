@@ -48,7 +48,9 @@ def main() -> int:
             continue
 
         duration = wav_duration(wav_path)
-        timing = estimate_timing(m["padas"], duration, meter=m["meter"])
+        # wav_path: measure the REAL phrase pauses from the rendered audio so
+        # the sidecar stays locked to it (mid-verse breaths delay nothing).
+        timing = estimate_timing(m["padas"], duration, meter=m["meter"], wav_path=wav_path)
         out_path = TIMING_OUT_DIR / f"{m['stableID']}.json"
 
         # Safety: only overwrite a sidecar whose words still match the corpus.
