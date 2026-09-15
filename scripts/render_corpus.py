@@ -229,6 +229,35 @@ def model_text_from_padas(padas: list[str]) -> str:
     return " ".join(padas)
 
 
+def bank_meter_key(meter: str, vagdhenu_root: Path) -> str:
+    """Normalize a configured meter to a key the reference bank resolves.
+
+    The bank's LUT matches its own keys and wav stems case-insensitively; a
+    configured name outside it (e.g. "gayatri", which the bank does not ship)
+    makes render.py fall back to vasantatilakā with a warning per clip. We
+    make that mapping explicit here — same reference chant, no per-clip
+    warning, and robust if upstream ever turns unknown meters into an error.
+    Unreadable/missing bank: return the meter unchanged (render.py's own
+    fallback still applies).
+    """
+    bank_path = vagdhenu_root / "src" / "reference_bank" / "bank.json"
+    if not bank_path.exists():
+        return meter
+    try:
+        bank = json.loads(bank_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return meter
+    lut: set[str] = set()
+    for k, v in bank.items():
+        if k.startswith("_") or not isinstance(v, dict) or "wav" not in v:
+            continue
+        lut.add(k.lower())
+        lut.add(str(v["wav"]).replace(".wav", "").lower())
+    if meter.lower() in lut:
+        return meter
+    return "vasantatilaka" if "vasantatilaka" in lut else meter
+
+
 def build_shard(mantras: list[dict], workdir: Path) -> Path:
     # no_sandhi is REQUIRED by Vagdhenu's render.py (KeyError per clip if
     # missing). true = text is already traditionally word-split; skip the
@@ -239,14 +268,19 @@ def build_shard(mantras: list[dict], workdir: Path) -> Path:
     # does for danda-free text. (A shard entry of per-word padas makes
     # render.py synthesize one clip per word and stitch them with 0.55s
     # silences; short clips get gate-trimmed to near-nothing — chopped audio.)
-    # The `meter` is still required: it selects the reference chant (unknown
-    # names fall back to vasantatilakā by design).
+    # The `meter` selects the reference chant: bank_meter_key normalizes
+    # configured names against the bank so unknown keys ("gayatri") map
+    # explicitly to the vasantatilakā reference instead of relying on
+    # render.py's per-clip fallback warning.
     shard = []
     for m in mantras:
+        meter = bank_meter_key(m["meter"], VAGDHENU_ROOT)
+        if meter != m["meter"]:
+            print(f"[meter] '{m['meter']}' not in reference bank -> using '{meter}'")
         shard.append(
             {
                 "id": m["stableID"],
-                "meter": m["meter"],
+                "meter": meter,
                 "padas": [model_text_from_padas(m["padas"])],
                 # seed 60 = the demo's slider default (and the seed behind the
                 # demo's published audio). F5 is seeded-stochastic; seed 42's

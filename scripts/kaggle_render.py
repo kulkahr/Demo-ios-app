@@ -472,6 +472,34 @@ def run_setup() -> None:
     verify_environment()
 
 
+def bank_meter_key(meter: str, vagdhenu_root: Path) -> str:
+    """Normalize a configured meter to a key the reference bank resolves.
+
+    Mirrors scripts/render_corpus.py: the bank's LUT matches its own keys and
+    wav stems case-insensitively; a configured name outside it (e.g. "gayatri",
+    which the bank does not ship) makes render.py fall back to vasantatilakā
+    with a warning per clip. We make that mapping explicit here — same
+    reference chant, no per-clip warning, robust if upstream ever errors on
+    unknown meters. Unreadable/missing bank: return the meter unchanged.
+    """
+    bank_path = vagdhenu_root / "src" / "reference_bank" / "bank.json"
+    if not bank_path.exists():
+        return meter
+    try:
+        bank = json.loads(bank_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return meter
+    lut: set[str] = set()
+    for k, v in bank.items():
+        if k.startswith("_") or not isinstance(v, dict) or "wav" not in v:
+            continue
+        lut.add(k.lower())
+        lut.add(str(v["wav"]).replace(".wav", "").lower())
+    if meter.lower() in lut:
+        return meter
+    return "vasantatilaka" if "vasantatilaka" in lut else meter
+
+
 def build_shard(workdir: Path) -> Path:
     # no_sandhi is REQUIRED by render.py (it indexes the key per clip; a
     # missing key fails every clip with KeyError 'no_sandhi'). true = our
@@ -481,20 +509,24 @@ def build_shard(workdir: Path) -> Path:
     # synthesis clip — exactly what the official demo's Renderer.render_one()
     # does for danda-free text. (Per-word padas make render.py stitch 0.55s
     # silences between clips and gate-trim short words to near-nothing.)
-    shard = [
-        {
-            "id": m["stableID"],
-            "meter": m["meter"],
-            "padas": [model_text_from_padas(m["padas"])],
-            # seed 60 = the demo's slider default (and the seed behind the
-            # demo's published audio). F5 is seeded-stochastic; seed 42's
-            # takes swallowed the leading OM (Kannada ಒಂ) in the Gāyatrī.
-            "seed": 60,
-            "no_sandhi": True,
-            "out": m["audioFileName"],
-        }
-        for m in MANTRAS
-    ]
+    shard = []
+    for m in MANTRAS:
+        meter = bank_meter_key(m["meter"], VAGDHENU)
+        if meter != m["meter"]:
+            print(f"[meter] '{m['meter']}' not in reference bank -> using '{meter}'")
+        shard.append(
+            {
+                "id": m["stableID"],
+                "meter": meter,
+                "padas": [model_text_from_padas(m["padas"])],
+                # seed 60 = the demo's slider default (and the seed behind the
+                # demo's published audio). F5 is seeded-stochastic; seed 42's
+                # takes swallowed the leading OM (Kannada ಒಂ) in the Gāyatrī.
+                "seed": 60,
+                "no_sandhi": True,
+                "out": m["audioFileName"],
+            }
+        )
     shard_path = workdir / "shard.json"
     shard_path.write_text(json.dumps(shard, ensure_ascii=False, indent=2))
     return shard_path

@@ -111,7 +111,7 @@ class VagdhenuTTS:
             # short words (ॐ, स्वः, नः) to near-nothing.
             shard_entry = {
                 "id": entry["id"],
-                "meter": entry["meter"],
+                "meter": bank_meter_key(entry["meter"], self.vagdhenu),
                 "padas": [model_text_from_padas(entry["padas"])],
                 # seed 60 = the demo's slider default (and the seed behind the
                 # demo's published audio). F5 is seeded-stochastic; seed 42's
@@ -257,6 +257,34 @@ def model_text_from_padas(padas: list[str]) -> str:
     demo's slider default) renders it reliably, seed 42 did not.
     """
     return " ".join(padas)
+
+
+def bank_meter_key(meter: str, vagdhenu_root: Path) -> str:
+    """Normalize a meter key to one the reference bank resolves.
+
+    Mirrors scripts/render_corpus.py: the bank's LUT matches its own keys and
+    wav stems case-insensitively; a configured name outside it (e.g. "gayatri",
+    which the bank does not ship) makes render.py fall back to vasantatilakā
+    with a warning per clip. We make that mapping explicit here — same
+    reference chant, no per-clip warning, robust if upstream ever errors on
+    unknown meters. Unreadable/missing bank: return the meter unchanged.
+    """
+    bank_path = vagdhenu_root / "src" / "reference_bank" / "bank.json"
+    if not bank_path.exists():
+        return meter
+    try:
+        bank = json.loads(bank_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return meter
+    lut: set[str] = set()
+    for k, v in bank.items():
+        if k.startswith("_") or not isinstance(v, dict) or "wav" not in v:
+            continue
+        lut.add(k.lower())
+        lut.add(str(v["wav"]).replace(".wav", "").lower())
+    if meter.lower() in lut:
+        return meter
+    return "vasantatilaka" if "vasantatilaka" in lut else meter
 
 
 def akshara_count(pada: str) -> int:
