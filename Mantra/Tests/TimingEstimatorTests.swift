@@ -114,7 +114,10 @@ struct TimingPlanTests {
         ])
         #expect(plan.entry(at: 0.5)?.text == "a")
         #expect(plan.entry(at: 1.0)?.text == "b")
-        #expect(plan.entry(at: 2.0) == nil) // past the end
+        // The FINAL entry is open-ended at its end (see TimingPlan): the
+        // finish tick reports exactly `duration`, which must still resolve
+        // to the last word or it can visually never highlight.
+        #expect(plan.entry(at: 2.0)?.text == "b")
         #expect(plan.index(at: 1.5) == 1)
     }
 }
