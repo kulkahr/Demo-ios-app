@@ -131,15 +131,13 @@ def akshara_count(pada: str) -> int:
 def model_text_from_padas(padas: list[str]) -> str:
     """Space-joined synthesis text for one continuous clip.
 
-    The OM symbol (U+0950) is spelled out as ओं — the traditional long-ō
-    chant orthography the Kannada-routed model is trained on. ॐ routes to
-    SLP1 "oM" → ಒಂ (short-o), which is out-of-distribution and gets
-    swallowed by the model (observed: Gāyatrī rendered without its OM);
-    ओं routes to ಓಂ, which the chant corpus contains. Display padas keep
-    the ॐ symbol; only the model text changes. Akshara counts are identical
-    (both = 1), so timing weights are unaffected.
+    ॐ is kept as-is: it and the long-ō spelling ओं both route to the same
+    SLP1 token "oM" (→ Kannada ಒಂ), so respelling cannot change the render.
+    The leading OM being swallowed is a sampling issue, not text: F5-TTS is
+    seeded-stochastic and some takes drop the short-o hum — seed 60 (the
+    demo's slider default) renders it reliably, seed 42 did not.
     """
-    return " ".join(padas).replace("\u0950", "\u0913\u0902")  # ॐ → ओं
+    return " ".join(padas)
 
 
 def wav_energy(path: Path, win_ms: float = 20.0) -> tuple[float, list[float]]:
@@ -488,7 +486,10 @@ def build_shard(workdir: Path) -> Path:
             "id": m["stableID"],
             "meter": m["meter"],
             "padas": [model_text_from_padas(m["padas"])],
-            "seed": 42,
+            # seed 60 = the demo's slider default (and the seed behind the
+            # demo's published audio). F5 is seeded-stochastic; seed 42's
+            # takes swallowed the leading OM (Kannada ಒಂ) in the Gāyatrī.
+            "seed": 60,
             "no_sandhi": True,
             "out": m["audioFileName"],
         }
@@ -506,6 +507,9 @@ def run_render(workdir: Path) -> None:
         "--shard", str(workdir / "shard.json"),
         "--results", str(workdir / "results.json"),
         "--outdir", str(workdir),
+        # nfe 32 = the demo server's VAGDHENU_NFE default (render.py's own
+        # default is 64). Matches the demo's audio and halves render time.
+        "--nfe", "32",
     ]
     sh(cmd, cwd=VAGDHENU, env=render_env())  # only Vagdhenu-specific line — see module docstring
 
