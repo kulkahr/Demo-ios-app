@@ -39,8 +39,11 @@ struct TimingEstimatorTests {
         for pair in zip(plan.entries, plan.entries.dropFirst()) {
             #expect(pair.0.end == pair.1.start)
         }
-        // Estimated flag is always true from the estimator.
-        #expect(plan.entries.allSatisfy(\.estimated))
+        // Estimated flag is always true from the estimator. Explicit closure:
+        // a key-path-as-function argument to the rethrows `allSatisfy` can be
+        // typed as throwing inside #expect's macro expansion ("Call can throw,
+        // but it is not marked with 'try'").
+        #expect(plan.entries.allSatisfy { $0.estimated })
     }
 
     @Test func longerWordsGetLongerSpans() {
