@@ -29,7 +29,7 @@ Mirrors Vagdhenu's batch shard JSON format (`src/render.py --shard`):
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `id` | string | yes | Client-generated unique ID, echoed in the response |
-| `meter` | string | yes | Vagdhenu meter key, e.g. `anushtubh` |
+| `meter` | string | yes | Meter key from the upstream reference bank (e.g. `anushtubh`, `vasantatilaka`, `malini`, …); unknown keys (incl. `gayatri`) silently render with the vasantatilakā fallback. The client's meter picker mirrors the bank. |
 | `padas` | [string] | yes | Devanagari words, in chant order |
 | `seed` | int? | no | Optional determinism seed; omitted → worker default 60 (the demo's default take) |
 | `no_sandhi` | bool | yes | Always `true` from the client — padas are already traditionally word-split; render.py requires the key and skips its automatic sandhi re-splitting when set |
