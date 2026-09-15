@@ -79,7 +79,7 @@ final class AudioPlayerService: ObservableObject {
     // MARK: - Transport
 
     func play() {
-        guard let file, currentURL != nil else { return }
+        guard file != nil, currentURL != nil else { return }
         if state == .paused {
             if let frame = pausedFrame {
                 // Resume from a seek-while-paused (or idle-seek) position: the

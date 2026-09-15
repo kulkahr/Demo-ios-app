@@ -102,7 +102,7 @@ struct VagdhenuClient {
             return try JSONDecoder().decode(SynthesisResponse.self, from: data)
         } catch let error as VagdhenuError {
             throw error
-        } catch let error as DecodingError {
+        } catch is DecodingError {
             throw VagdhenuError.invalidResponse
         } catch {
             throw VagdhenuError.network(error.localizedDescription)
