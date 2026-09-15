@@ -10,6 +10,8 @@ struct VagdhenuContractTests {
         #expect(entry["meter"] as? String == "anushtubh")
         #expect(entry["padas"] as? [String] == ["ॐ", "स्वः"])
         #expect(entry["seed"] as? Int == 7)
+        // render.py requires no_sandhi on every shard entry.
+        #expect(entry["no_sandhi"] as? Bool == true)
     }
 
     @Test func shardEntryOmitsSeedWhenNil() {

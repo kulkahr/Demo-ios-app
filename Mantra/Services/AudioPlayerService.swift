@@ -40,6 +40,22 @@ final class AudioPlayerService: ObservableObject {
     private var scheduleGeneration = 0
     /// Pause point; play() resumes from here after a seek while paused.
     private var pausedFrame: AVAudioFramePosition?
+    /// Frame the current scheduled segment starts at (0 for a fresh loop).
+    /// Reported positions are relative to it.
+    private var segmentStartFrame: AVAudioFramePosition = 0
+    /// playerTime.sampleTime captured when the current segment began
+    /// rendering. AVAudioPlayerNode's timeline RESTARTS after stop()+play()
+    /// (seek) but CONTINUES across a loop rollover (completion handler), so
+    /// positions must be computed as (now − baseline) + segmentStart — a
+    /// fixed anchor cannot model both.
+    private var playerTimeBaseline: AVAudioFramePosition = 0
+    /// Set when a new segment is scheduled; the next valid poll captures the
+    /// baseline. Until then, currentTime keeps the explicitly-set seek/0
+    /// value, so no wrong position is ever published.
+    private var needsBaseline = false
+    /// Wall-clock stamp of the last poll that advanced currentTime. Used to
+    /// interpolate across polls where the player reports no time.
+    private var lastPollWall: CFAbsoluteTime = 0
 
     init() {
         engine.attach(player)
@@ -85,12 +101,15 @@ final class AudioPlayerService: ObservableObject {
                 // Resume from a seek-while-paused (or idle-seek) position: the
                 // original segment was invalidated by player.stop(), so
                 // schedule a new one starting at the seek target.
-                startEngineIfNeeded()
+                guard startEngineIfNeeded() else { return }
                 scheduleCurrentFile(startingAt: frame)
                 player.play()
                 pausedFrame = nil
             } else {
-                // Plain pause/resume: the segment is still scheduled.
+                // Plain pause/resume: the segment is still scheduled. Restart
+                // the engine first if an interruption stopped it, or the
+                // resume would be silent.
+                guard startEngineIfNeeded() else { return }
                 player.play()
             }
             state = .playing
@@ -103,7 +122,7 @@ final class AudioPlayerService: ObservableObject {
         loopsRemaining = max(totalLoops - 1, 0)
         loopIndex = 1
 
-        startEngineIfNeeded()
+        guard startEngineIfNeeded() else { return }
         scheduleCurrentFile()
         player.play()
         timePitch.rate = speed
@@ -130,6 +149,7 @@ final class AudioPlayerService: ObservableObject {
         }
         player.reset()
         pausedFrame = nil
+        segmentStartFrame = 0
         currentTime = 0
         loopIndex = 1
         state = .idle
@@ -151,10 +171,14 @@ final class AudioPlayerService: ObservableObject {
         currentTime = clamped
 
         if wasPlaying {
-            startEngineIfNeeded()
-            scheduleCurrentFile(startingAt: frame, generation: generation)
-            player.play()
-            pausedFrame = nil
+            if startEngineIfNeeded() {
+                scheduleCurrentFile(startingAt: frame, generation: generation)
+                player.play()
+                pausedFrame = nil
+            } else {
+                // Nothing is scheduled after player.stop(); reflect that.
+                state = .idle
+            }
         } else {
             if wasIdle {
                 // A seek from idle/finished arms a fresh chant session.
@@ -179,6 +203,8 @@ final class AudioPlayerService: ObservableObject {
         let framesRemaining = file.length - startFrame
         guard framesRemaining > 0 else { return }
 
+        segmentStartFrame = startFrame
+        needsBaseline = true
         player.scheduleSegment(
             file,
             startingFrame: startFrame,
@@ -214,15 +240,21 @@ final class AudioPlayerService: ObservableObject {
         }
     }
 
-    private func startEngineIfNeeded() {
+    /// Starts the engine if it isn't running. Returns false when the engine
+    /// could not start (e.g. after a route-change error) so callers stay in
+    /// their current state instead of pretending to play.
+    @discardableResult
+    private func startEngineIfNeeded() -> Bool {
         if !engine.isRunning {
             do {
                 try engine.start()
             } catch {
-                // Engine start failure leaves state idle; UI shows transport disabled.
-                state = .idle
+                // Engine start failure leaves state unchanged; UI shows
+                // transport inactive rather than a stuck "playing" state.
+                return false
             }
         }
+        return true
     }
 
     // MARK: - Position polling
@@ -244,11 +276,37 @@ final class AudioPlayerService: ObservableObject {
     }
 
     private func pollPosition() {
+        let now = CFAbsoluteTimeGetCurrent()
         guard let nodeTime = player.lastRenderTime,
               let playerTime = player.playerTime(forNodeTime: nodeTime),
               playerTime.sampleRate > 0
-        else { return }
-        currentTime = max(0, Double(playerTime.sampleTime) / playerTime.sampleRate)
+        else {
+            // Near the end of a scheduled segment the node can report no
+            // player time while the last samples drain. Freezing here would
+            // strand the highlight on the second-to-last word — the last
+            // word would never light up. Interpolate from wall clock
+            // instead (file time advances at `speed` × wall time); the
+            // completion callback then pins the exact end.
+            if state == .playing, lastPollWall > 0 {
+                let elapsed = max(0, now - lastPollWall)
+                currentTime = min(currentTime + Double(speed) * elapsed, duration)
+            }
+            lastPollWall = now
+            return
+        }
+        if needsBaseline {
+            playerTimeBaseline = playerTime.sampleTime
+            needsBaseline = false
+        }
+        // Position within the current segment, clamped to [0, duration]:
+        // after the last scheduled frame the player time keeps advancing
+        // while trailing samples drain — unclamped, it runs past `duration`,
+        // matches no timing entry, and the last word visibly drops its
+        // highlight at the end of every chant.
+        let seconds = (Double(playerTime.sampleTime - playerTimeBaseline)
+                       + Double(segmentStartFrame)) / playerTime.sampleRate
+        currentTime = max(0, min(seconds, duration))
+        lastPollWall = now
     }
 
     // MARK: - Speed

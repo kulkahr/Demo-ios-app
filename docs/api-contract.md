@@ -20,7 +20,8 @@ Mirrors Vagdhenu's batch shard JSON format (`src/render.py --shard`):
   "id": "custom-1726000000",
   "meter": "anushtubh",
   "padas": ["ॐ", "भूर्भुवः", "स्वः"],
-  "seed": 42,
+  "seed": 60,
+  "no_sandhi": true,
   "text": "ॐ भूर्भुवः स्वः"
 }
 ```
@@ -28,9 +29,10 @@ Mirrors Vagdhenu's batch shard JSON format (`src/render.py --shard`):
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `id` | string | yes | Client-generated unique ID, echoed in the response |
-| `meter` | string | yes | Vagdhenu meter key, e.g. `anushtubh` |
+| `meter` | string | yes | Meter key from the upstream reference bank (e.g. `anushtubh`, `vasantatilaka`, `malini`, …); unknown keys (incl. `gayatri`) silently render with the vasantatilakā fallback. The client's meter picker mirrors the bank. |
 | `padas` | [string] | yes | Devanagari words, in chant order |
-| `seed` | int? | no | Optional determinism seed |
+| `seed` | int? | no | Optional determinism seed; omitted → worker default 60 (the demo's default take) |
+| `no_sandhi` | bool | yes | Always `true` from the client — padas are already traditionally word-split; render.py requires the key and skips its automatic sandhi re-splitting when set |
 | `text` | string | no | Full verse string (used by worker-side sandhi/frontend when padas need re-splitting) |
 
 ### Response — success (200)
@@ -90,5 +92,8 @@ The worker keeps a Modal Volume cache keyed by `(meter, padas, seed)`. A cache h
 ## Timing rules
 
 - `timing` must contain exactly one entry per pada, in order.
-- Word boundaries come from the render pipeline when available; otherwise the worker estimates them the same way `TimingEstimator` does on-device (syllable-weight distribution), marking `estimated: true`.
+- Word boundaries come from the render pipeline when available; otherwise the worker estimates them the same way `TimingEstimator` does on-device (structural model: the verse is synthesized as one continuous clip with the word-padas space-joined — the official demo's `render_one()` shape — so each word's span is proportional to its akshara count across the audio duration; each entry spans from its onset to the next onset), marking `estimated: true`. Unlike the corpus path, the worker does **not** subtract measured pauses — the client's uniform fallback must match a plan computable before playback.
+- **OM:** `padas` may carry `ॐ`; it is kept as-is in the model text — respelling it ओं changes nothing (both route to the same SLP1 token `oM` → Kannada ಒಂ). A swallowed leading OM is a sampling issue: the worker defaults to seed 60 / nfe 32 (the demo server's defaults), whose takes render the OM reliably.
+- The model text the worker sends to Vagdhenu joins the padas with spaces (one continuous piece); `padas` itself stays the display word list.
+- Entries must be contiguous — each entry's `start` equals the previous entry's `end` — so highlight switches happen exactly at onsets and no word is skipped while still sounding.
 - Clients must clamp: if `end > duration`, clamp to `duration`.

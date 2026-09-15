@@ -2,17 +2,40 @@ import Combine
 import Foundation
 import SwiftData
 
-/// Known Vagdhenu meter keys. Mirrors the meters accepted by the worker.
+/// Vagdhenu meter keys. The picker mirrors the meters the upstream reference
+/// bank actually ships (ASCII wav-stem keys, verified against bank.json) —
+/// render.py silently falls back to vasantatilakā for anything else, so
+/// offering unknown keys would quietly render the wrong reference chant.
+/// Notably `gayatri` is NOT in the bank: the Gāyatrī renders with the
+/// vasantatilakā reference — the same choice the demo's Auto-detect makes.
 enum MeterCatalog {
     static let defaultMeter = "anushtubh"
-    static let all = [
+    static let all: [(String, String)] = [
         ("anushtubh", "Anuṣṭubh (śloka)"),
-        ("gayatri", "Gāyatrī"),
-        ("trishtubh", "Triṣṭubh"),
-        ("jagati", "Jagatī"),
+        ("vasantatilaka", "Vasantatilakā"),
+        ("upajati", "Upajāti"),
+        ("indravajra", "Indravajrā"),
+        ("upendravajra", "Upendravajrā"),
+        ("vamshastha", "Vaṃśastha"),
+        ("rathoddhata", "Rathoddhatā"),
+        ("shalini", "Śālinī"),
+        ("indravamsha", "Indravaṃśā"),
+        ("drutavilambita", "Drutavilambita"),
+        ("bhujangaprayata", "Bhujaṅgaprayāta"),
+        ("malini", "Mālinī"),
+        ("shardulavikridita", "Śārdūlavikrīḍita"),
+        ("sragdhara", "Sragdharā"),
+        ("gadya", "Gadya (prose)"),
     ]
+
+    /// Display names for meter keys that appear in corpus config but are not
+    /// in the bank (shown in lists, never offered for synthesis).
+    private static let extraDisplayNames: [String: String] = [
+        "gayatri": "Gāyatrī",
+    ]
+
     static func displayName(for key: String) -> String {
-        all.first { $0.0 == key }?.1 ?? key
+        all.first { $0.0 == key }?.1 ?? extraDisplayNames[key] ?? key
     }
 }
 

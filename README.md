@@ -67,9 +67,13 @@ Word timings resolve in priority order (see `docs/architecture.md` §5.3):
 
 1. Backend-provided timings (custom verses)
 2. Sidecar `mantras/timing/<id>.json` (corpus, produced at render time)
-3. On-device syllable-weight estimation (`TimingEstimator`) — flagged as estimated
+3. On-device structural estimation (`TimingEstimator`) — flagged as estimated
 
-The same estimator algorithm is implemented in Swift, Python (worker + render script) so all paths agree.
+The verse is rendered as one continuous clip (padas space-joined in the shard — the same shape as Vagdhenu's official demo), so the estimator distributes the audio duration across padas proportionally to each word's akshara (syllable) count: short words are never skipped and highlights switch exactly at word onsets. At corpus-render time the real phrase pauses (breaths) are measured from the WAV's energy envelope and appended after their word, so highlights after a mid-verse pause stay in sync instead of drifting late; the on-device fallback (before audio exists) stays uniform. The same algorithm is implemented in Swift, Python (worker + both render scripts) so all paths agree. All render paths use the demo's sampling defaults (seed 60, nfe 32) — F5-TTS is seeded-stochastic and other takes can drop the leading OM. Rebuilt corpus sidecars after changing the estimator with:
+
+```bash
+python3 scripts/regen_timing.py   # no GPU needed — reads existing WAVs
+```
 
 ## Attributions & licenses
 

@@ -47,6 +47,10 @@ final class ChantViewModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] state in
                 guard let self else { return }
+                // First audible playback anchors the session start time.
+                if state == .playing, self.sessionStart == nil {
+                    self.sessionStart = .now
+                }
                 if state == .finished {
                     self.recordSessionIfPending()
                 }
@@ -91,8 +95,9 @@ final class ChantViewModel: ObservableObject {
            let sidecar = CorpusLoader().sidecarTiming(for: mantra.stableID) {
             return TimingPlan(entries: Self.clamped(sidecar, to: duration))
         }
-        // 3) Fallback: on-device syllable-weight estimation.
-        return TimingEstimator.estimate(padas: mantra.padas, duration: duration)
+        // 3) Fallback: on-device structural estimation (akshara-proportional
+        // spans over the audio — one continuous synthesis clip, no gaps).
+        return TimingEstimator.estimate(padas: mantra.padas, duration: duration, meter: mantra.meter)
     }
 
     /// api-contract.md: "Clients must clamp: if `end > duration`, clamp to
