@@ -8,7 +8,7 @@ import Security
 /// never restored to other devices through backups.
 enum KeychainStore {
     /// Namespace for items stored by this app.
-    private static let service = "com.mantra.tts"
+    private static let service = "in.org.hrishi.Mantra.tts"
 
     static func get(_ key: String) -> String? {
         var query = baseQuery(for: key)
